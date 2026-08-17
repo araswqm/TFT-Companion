@@ -1,5 +1,6 @@
 package com.araswqm.tftcompanion.media
 
+import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -39,6 +40,16 @@ class MediaSessionWatcher(context: Context) {
         appContext.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Diğer uygulamaların oturumlarını görmek için getActiveSessions/oturum
+    // dinleyicisine KENDİ NotificationListenerService bileşenimizi vermeliyiz.
+    // null verilirse imzasız bir uygulama yalnızca kendi oturumlarını görür
+    // (MEDIA_CONTENT_CONTROL gereklidir) — müzik uygulamalarının oturumu asla
+    // gelmez. Bu yüzden bildirim erişimi izni şarttır; verilmemişse bu çağrılar
+    // SecurityException fırlatır ve runCatching ile loglanır.
+    private val listenerComponent = ComponentName(
+        appContext, MediaNotificationListener::class.java
+    )
+
     // Arka plan işleri asla uygulamayı çöktürmemeli; hatalar yalnızca loglanır.
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e ->
@@ -61,7 +72,7 @@ class MediaSessionWatcher(context: Context) {
                 Log.d(TAG, "Aktif oturum listesi değişti, yeniden değerlendiriliyor")
                 if (running) refresh()
             }
-            msm.addOnActiveSessionsChangedListener(sessionsListener!!, null)
+            msm.addOnActiveSessionsChangedListener(sessionsListener!!, listenerComponent)
         }.onFailure { e ->
             Log.e(TAG, "Oturum dinleyicisi kaydedilemedi: ${e.message}")
         }
@@ -81,19 +92,25 @@ class MediaSessionWatcher(context: Context) {
     }
 
     private fun refresh() {
-        detachAll()
-        val sessions = msm.getActiveSessions(null)
-        if (sessions.isEmpty()) {
-            Log.d(TAG, "Hiç aktif medya oturumu yok")
-            return
-        }
-        Log.d(TAG, "${sessions.size} aktif oturum bulundu")
+        // Bildirim erişimi yokken getActiveSessions(listenerComponent)
+        // SecurityException fırlatabilir; izleme asla çökmemeli, yalnızca logla.
+        runCatching {
+            detachAll()
+            val sessions = msm.getActiveSessions(listenerComponent)
+            if (sessions.isEmpty()) {
+                Log.d(TAG, "Hiç aktif medya oturumu yok")
+                return
+            }
+            Log.d(TAG, "${sessions.size} aktif oturum bulundu")
 
-        // Öncelik: STATE_PLAYING olan, son aktif olan (listenin sonundaki) oturum.
-        val playing = sessions.filter { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-        val chosen = (playing.ifEmpty { sessions }).lastOrNull() ?: return
-        Log.d(TAG, "Seçilen oturum: ${chosen.packageName} (state=${chosen.playbackState?.state})")
-        attach(chosen)
+            // Öncelik: STATE_PLAYING olan, son aktif olan (listenin sonundaki) oturum.
+            val playing = sessions.filter { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            val chosen = (playing.ifEmpty { sessions }).lastOrNull() ?: return
+            Log.d(TAG, "Seçilen oturum: ${chosen.packageName} (state=${chosen.playbackState?.state})")
+            attach(chosen)
+        }.onFailure { e ->
+            Log.w(TAG, "Oturum taraması başarısız: ${e.message}")
+        }
     }
 
     private fun attach(controller: MediaController) {

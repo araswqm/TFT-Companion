@@ -134,11 +134,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         // seç ve gönder" demeden durum kartının "ESP32 bağlı" göstermesini sağlar.
         // connect() zaten CONNECTED/CONNECTING durumlarını yinelenen bağlantıya
         // karşı korur, bu yüzden Preview'dan dönüşlerde yeniden tetiklenmesi zararsızdır.
+        // Otomatik modda izleme servisi de burada başlatılır: yeni kurulumda
+        // kullanıcı modu hiç değiştirmezse setMode hiç çalışmaz ve şarkı asla
+        // algılanmaz. Ekran ön plandayken (Main) başlatılır ki startForegroundService
+        // güvenle çağrılabilsin; zaten çalışan serviste tekrar çağrı zararsızdır.
         viewModelScope.launch {
             _ui.map { it.screen }
                 .distinctUntilChanged()
                 .collect { screen ->
-                    if (screen == Screen.Main) connect()
+                    if (screen == Screen.Main) {
+                        connect()
+                        if (_ui.value.mode == MediaMode.AUTO) {
+                            startWatchService(getApplication())
+                        }
+                    }
                 }
         }
 

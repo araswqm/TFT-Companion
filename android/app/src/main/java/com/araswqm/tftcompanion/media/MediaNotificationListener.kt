@@ -31,14 +31,20 @@ class MediaNotificationListener : NotificationListenerService() {
         try {
             if (!isMediaNotification(sbn.notification)) return
 
-            val md = sbn.notification.extras.getBundle(EXTRA_MEDIA_METADATA) ?: return
-            val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
-                ?: sbn.notification.extras.getString(Notification.EXTRA_TITLE)
+            // Çoğu uygulama "android.media.metadata" bundle'ını bildirime KOYMAZ;
+            // başlık/artist doğrudan bildirim alanlarındadır. Bu yüzden metadata
+            // yoksa erken dönmek yerine EXTRA_TITLE/EXTRA_TEXT fallback'ine düş.
+            val extras = sbn.notification.extras
+            val md = extras.getBundle(EXTRA_MEDIA_METADATA)
+            val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?: extras.getString(Notification.EXTRA_TITLE)
             if (title == null) return
 
-            val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
-                ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM)
-                ?: sbn.notification.extras.getString(Notification.EXTRA_TEXT) ?: ""
+            val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM)
+                ?: extras.getString(Notification.EXTRA_TEXT)
+                ?: extras.getString(Notification.EXTRA_SUB_TEXT)
+                ?: ""
             val art = resolveArt(md, sbn.notification)
 
             Log.d(TAG, "Bildirim metadata: '$title' - $artist (${sbn.packageName})")
@@ -61,18 +67,20 @@ class MediaNotificationListener : NotificationListenerService() {
         return clazz.contains("MediaStyle")
     }
 
-    private fun resolveArt(md: Bundle, n: Notification): Bitmap? {
-        // getParcelable yanlış tipte veride ClassCastException fırlatabilir.
-        runCatching {
-            md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
-            md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_DISPLAY_ICON)?.let { return it }
-        }.onFailure { e ->
-            Log.w(TAG, "Kapak Bitmap olarak okunamadı: ${e.message}")
-        }
-        val uri = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
-            ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
-        if (uri != null) {
-            return loadUri(Uri.parse(uri))
+    private fun resolveArt(md: Bundle?, n: Notification): Bitmap? {
+        if (md != null) {
+            // getParcelable yanlış tipte veride ClassCastException fırlatabilir.
+            runCatching {
+                md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
+                md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_DISPLAY_ICON)?.let { return it }
+            }.onFailure { e ->
+                Log.w(TAG, "Kapak Bitmap olarak okunamadı: ${e.message}")
+            }
+            val uri = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
+                ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+            if (uri != null) {
+                return loadUri(Uri.parse(uri))
+            }
         }
 
         // Çoğu müzik uygulaması kapağı metadata'ya DEĞİL bildirimin büyük
