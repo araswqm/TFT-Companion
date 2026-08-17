@@ -38,7 +38,15 @@
 #include <WebServer.h>
 #include <SPI.h>
 #include <TFT_eSPI.h>
-#include <LittleFS.h>
+// NOT: arduino-esp32 3.3.7'deki LittleFS.h sarmalayıcısı bozuk — idf-6.x API'sini
+// (conf.partition alanı) kullanıyor ama C6 için gömülü esp_littlefs başlıkları eski
+// v1 API (yalnızca partition_label). Bu yüzden 'esp_vfs_littlefs_conf_t' struct'ında
+// 'partition' yok ve derleme patlıyor. Çözüm: sarmalayıcıyı hiç kullanmadan doğrudan
+// ESP-IDF'nin ham esp_littlefs C API'sine geçtik. Dosyalar VFS üzerinden
+// "/littlefs/..." POSIX yollarıyla açılır (fopen/fread/fseek...).
+#include <esp_littlefs.h>
+#include <stdio.h>
+#include <string.h>
 #include <JPEGDecoder.h>
 #include <Adafruit_NeoPixel.h>
 #include <AnimatedGIF.h>
@@ -79,7 +87,6 @@ MediaType currentMedia = MEDIA_NONE;
 
 // GIF
 AnimatedGIF gif;
-File        gifFile;
 bool        gifPlaying    = false;
 int         gifOffX = 0, gifOffY = 0;
 float       gifScale      = 1.0f;
@@ -88,7 +95,7 @@ int         gifFrameDelay = 0;
 
 // MJPEG
 bool        mjpegPlaying    = false;
-File        mjpegFile;
+FILE*       mjpegFile       = nullptr;   // LittleFS yerine POSIX (esp_littlefs VFS)
 uint8_t*    mjpegBuf        = nullptr;
 size_t      mjpegBufSize    = 0;
 unsigned long mjpegLastFrame = 0;
@@ -101,7 +108,7 @@ static void freeMedia() {
   gif.close();
 
   mjpegPlaying = false;
-  if (mjpegFile) mjpegFile.close();
+  if (mjpegFile) { fclose(mjpegFile); mjpegFile = nullptr; }
   if (mjpegBuf) { free(mjpegBuf); mjpegBuf = nullptr; mjpegBufSize = 0; }
 
   currentMedia = MEDIA_NONE;
@@ -110,29 +117,38 @@ static void freeMedia() {
 // ═══════════════════════════════════════════════════════════════════════
 //  GIF CALLBACK'LERİ
 // ═══════════════════════════════════════════════════════════════════════
-static File gifCbFile;
+// esp_littlefs "/littlefs" köküne mount edilir; fname "/uploaded.gif" gibi kök-yollu
+// gelir, VFS üzerinde "/littlefs/uploaded.gif" olarak açılır.
+static void lfsPath(const char* name, char* out, size_t outSz) {
+  snprintf(out, outSz, "/littlefs%s", name);
+}
 
 void* GIFOpenFile(const char* fname, int32_t* pSize) {
-  gifCbFile = LittleFS.open(fname, "r");
-  if (gifCbFile) { *pSize = gifCbFile.size(); return &gifCbFile; }
-  return nullptr;
+  char path[64];
+  lfsPath(fname, path, sizeof(path));
+  FILE* f = fopen(path, "rb");
+  if (f) {
+    fseek(f, 0, SEEK_END);
+    *pSize = (int32_t)ftell(f);
+    fseek(f, 0, SEEK_SET);
+  }
+  return f;
 }
 void GIFCloseFile(void* pHandle) {
-  File* f = static_cast<File*>(pHandle);
-  if (f && *f) f->close();
+  if (pHandle) fclose((FILE*)pHandle);
 }
 int32_t GIFReadFile(GIFFILE* pFile, uint8_t* pBuf, int32_t iLen) {
-  File* f = static_cast<File*>(pFile->fHandle);
+  FILE* f = (FILE*)pFile->fHandle;
   int32_t toRead = min((int32_t)(pFile->iSize - pFile->iPos), iLen);
   if (toRead <= 0) return 0;
-  toRead = f->read(pBuf, toRead);
-  pFile->iPos = f->position();
+  toRead = (int32_t)fread(pBuf, 1, toRead, f);
+  pFile->iPos += toRead;
   return toRead;
 }
 int32_t GIFSeekFile(GIFFILE* pFile, int32_t iPosition) {
-  File* f = static_cast<File*>(pFile->fHandle);
-  f->seek(iPosition);
-  pFile->iPos = f->position();
+  FILE* f = (FILE*)pFile->fHandle;
+  fseek(f, iPosition, SEEK_SET);
+  pFile->iPos = iPosition;
   return pFile->iPos;
 }
 
@@ -192,13 +208,33 @@ void startGif(const char* filename) {
 void drawJpeg(const char* filename) {
   freeMedia();
 
-  File f = LittleFS.open(filename, "r");
+  // JPEGDecoder Arduino FS istiyor (decodeSdFile), LittleFS yok. 128x128 JPEG'ler
+  // küçük olduğundan dosyayı RAM'e alıp decodeJpg ile çözüyoruz. Fotoğraf gibi
+  // büyük dosyalar heap'i zorlamasın diye üst sınır koyuyoruz.
+  char path[64];
+  lfsPath(filename, path, sizeof(path));
+  FILE* f = fopen(path, "rb");
   if (!f) { Serial.println("JPEG acilamadi"); return; }
 
-  if (!JpegDec.decodeSdFile(f)) {
-    Serial.println("JPEG decode hatasi");
-    f.close(); return;
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  const long MAX_JPG = 180 * 1024L;
+  if (sz <= 0 || sz > MAX_JPG) {
+    Serial.printf("JPEG boyutu uygun degil: %ld B\n", sz);
+    fclose(f);
+    return;
   }
+  uint8_t* jbuf = (uint8_t*)malloc((size_t)sz);
+  if (!jbuf) { Serial.println("JPEG heap hatasi"); fclose(f); return; }
+  size_t got = fread(jbuf, 1, (size_t)sz, f);
+  fclose(f);
+  if (got != (size_t)sz || !JpegDec.decodeJpg(jbuf, (uint32_t)sz)) {
+    free(jbuf);
+    Serial.println("JPEG decode hatasi");
+    return;
+  }
+  free(jbuf);   // decode bitti, giriş tamponu artık gerekmiyor
 
   int jpW = JpegDec.width, jpH = JpegDec.height;
   float sc = min((float)SCREEN_W / jpW, (float)SCREEN_H / jpH);
@@ -237,7 +273,6 @@ void drawJpeg(const char* filename) {
     }
   }
   tft.endWrite();
-  f.close();
   currentMedia = MEDIA_JPEG;
   Serial.println("JPEG gosterildi.");
 }
@@ -245,27 +280,27 @@ void drawJpeg(const char* filename) {
 // ═══════════════════════════════════════════════════════════════════════
 //  MJPEG OYNATICI
 // ═══════════════════════════════════════════════════════════════════════
-bool mjpegFindNextFrame(File& f, size_t* outStart, size_t* outLen) {
-  int b0 = -1, b1 = -1;
-  while (f.available()) {
+bool mjpegFindNextFrame(FILE* f, size_t* outStart, size_t* outLen) {
+  int b0 = -1, b1 = -1, c;
+  while ((c = fgetc(f)) != EOF) {
     b0 = b1;
-    b1 = f.read();
+    b1 = c;
     if (b0 == 0xFF && b1 == 0xD8) break;
   }
-  if (!f.available() && !(b0 == 0xFF && b1 == 0xD8)) return false;
+  if (!(b0 == 0xFF && b1 == 0xD8)) return false;
 
-  size_t start = f.position() - 2;
+  size_t start = (size_t)ftell(f) - 2;
 
   b0 = -1; b1 = -1;
-  while (f.available()) {
+  while ((c = fgetc(f)) != EOF) {
     b0 = b1;
-    b1 = f.read();
+    b1 = c;
     if (b0 == 0xFF && b1 == 0xD9) break;
   }
   if (!(b0 == 0xFF && b1 == 0xD9)) return false;
 
   *outStart = start;
-  *outLen   = f.position() - start;
+  *outLen   = (size_t)ftell(f) - start;
   return true;
 }
 
@@ -273,12 +308,14 @@ void startMjpeg(const char* filename) {
   freeMedia();
   tft.fillScreen(TFT_BLACK);
 
-  mjpegFile = LittleFS.open(filename, "r");
+  char path[64];
+  lfsPath(filename, path, sizeof(path));
+  mjpegFile = fopen(path, "rb");
   if (!mjpegFile) { Serial.println("MJPEG acilamadi"); return; }
 
   mjpegBufSize = 32768;
   mjpegBuf = (uint8_t*)malloc(mjpegBufSize);
-  if (!mjpegBuf) { Serial.println("MJPEG heap hatasi"); mjpegFile.close(); return; }
+  if (!mjpegBuf) { Serial.println("MJPEG heap hatasi"); fclose(mjpegFile); mjpegFile = nullptr; return; }
 
   mjpegLastFrame = millis();
   mjpegPlaying   = true;
@@ -290,7 +327,7 @@ bool mjpegPlayFrame() {
   size_t fStart, fLen;
 
   if (!mjpegFindNextFrame(mjpegFile, &fStart, &fLen)) {
-    mjpegFile.seek(0);
+    fseek(mjpegFile, 0, SEEK_SET);
     return false;
   }
 
@@ -301,8 +338,8 @@ bool mjpegPlayFrame() {
     if (!mjpegBuf) { Serial.println("MJPEG realloc hatasi"); mjpegPlaying = false; return false; }
   }
 
-  mjpegFile.seek(fStart);
-  size_t read = mjpegFile.read(mjpegBuf, fLen);
+  fseek(mjpegFile, fStart, SEEK_SET);
+  size_t read = fread(mjpegBuf, 1, fLen, mjpegFile);
   if (read != fLen) return false;
 
   if (!JpegDec.decodeArray(mjpegBuf, fLen)) return true;
@@ -349,7 +386,11 @@ bool mjpegPlayFrame() {
 // ═══════════════════════════════════════════════════════════════════════
 // Android uygulaması gönderim öncesi boş alanı / mevcut medyayı buradan öğrenir.
 void handleStatus() {
-  size_t freeBytes = LittleFS.totalBytes() - LittleFS.usedBytes();
+  size_t total = 0, used = 0;
+  size_t freeBytes = 0;
+  if (esp_littlefs_info("spiffs", &total, &used) == ESP_OK) {
+    freeBytes = (total > used) ? (total - used) : 0;
+  }
 
   const char* mediaStr = "none";
   switch (currentMedia) {
@@ -410,7 +451,7 @@ document.getElementById('frm').addEventListener('submit',function(e){
 
 void handleUpload() {
   HTTPUpload& upload = server.upload();
-  static File    uploadFile;
+  static FILE*   uploadFile = nullptr;
   static String  uploadPath;
   static bool    uploadOk;
 
@@ -423,30 +464,41 @@ void handleUpload() {
              fn.endsWith(".mjpg"))  uploadPath = "/uploaded.mjpeg";
     else                            uploadPath = "/uploaded.jpg";
 
-    if (LittleFS.exists("/uploaded.jpg"))   LittleFS.remove("/uploaded.jpg");
-    if (LittleFS.exists("/uploaded.gif"))   LittleFS.remove("/uploaded.gif");
-    if (LittleFS.exists("/uploaded.mjpeg")) LittleFS.remove("/uploaded.mjpeg");
+    // Eski medyayı sil. Mevcut olmayan dosyalar için remove() hata döner; önemli değil.
+    remove("/littlefs/uploaded.jpg");
+    remove("/littlefs/uploaded.gif");
+    remove("/littlefs/uploaded.mjpeg");
 
-    size_t freeBytes = LittleFS.totalBytes() - LittleFS.usedBytes();
+    size_t total = 0, used = 0;
+  size_t freeBytes = 0;
+  if (esp_littlefs_info("spiffs", &total, &used) == ESP_OK) {
+    freeBytes = (total > used) ? (total - used) : 0;
+  }
     Serial.printf("LittleFS bos: %u B\n", (unsigned)freeBytes);
 
-    uploadFile = LittleFS.open(uploadPath, "w");
-    uploadOk   = (bool)uploadFile;
+    char fpath[64];
+    lfsPath(uploadPath.c_str(), fpath, sizeof(fpath));
+    uploadFile = fopen(fpath, "wb");
+    uploadOk   = (uploadFile != nullptr);
     if (!uploadOk) Serial.println("Dosya olusturulamadi");
 
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (uploadOk && uploadFile) {
-      if (uploadFile.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      if (fwrite(upload.buf, 1, upload.currentSize, uploadFile) != upload.currentSize) {
         Serial.println("Yazma hatasi, iptal ediliyor");
         uploadOk = false;
-        uploadFile.close();
-        LittleFS.remove(uploadPath);
+        fclose(uploadFile);
+        uploadFile = nullptr;
+        char fpath[64];
+        lfsPath(uploadPath.c_str(), fpath, sizeof(fpath));
+        remove(fpath);
       }
     }
 
   } else if (upload.status == UPLOAD_FILE_END) {
     if (uploadOk && uploadFile) {
-      uploadFile.close();
+      fclose(uploadFile);
+      uploadFile = nullptr;
       Serial.printf("Yuklendi: %s (%u B)\n", uploadPath.c_str(), (unsigned)upload.totalSize);
 
       if      (uploadPath == "/uploaded.gif")   startGif(uploadPath.c_str());
@@ -490,7 +542,16 @@ void setup() {
   tft.setCursor(4, 10);
   tft.println("Baslatiliyor...");
 
-  if (!LittleFS.begin(true)) {
+  // LittleFS.h sarmalayıcısı bozuk olduğundan ham ESP-IDF esp_littlefs C API'si ile
+  // mount ediyoruz. Partition etiketi Arduino'nun varsayılan tablosundaki "spiffs"tir.
+  // SADECE v1-uyumlu alanlar kuruluyor (base_path / partition_label / format_if_mount_failed)
+  // — 3.3.7'nin gömülü başlıklarında 'partition' gibi idf-6.x alanları YOK, onlara
+  // dokunmuyoruz (derleme hatasının kaynağı tam da buydu).
+  esp_vfs_littlefs_conf_t lfsConf = {};
+  lfsConf.base_path              = "/littlefs";
+  lfsConf.partition_label        = "spiffs";
+  lfsConf.format_if_mount_failed = true;
+  if (esp_vfs_littlefs_register(&lfsConf) != ESP_OK) {
     Serial.println("LittleFS mount hatasi");
     tft.println("FS HATASI!");
   }
@@ -543,7 +604,7 @@ void loop() {
       bool hasMore = mjpegPlayFrame();
       mjpegLastFrame = millis();
       if (!hasMore) {
-        mjpegFile.seek(0);
+        fseek(mjpegFile, 0, SEEK_SET);
       }
     }
   }
