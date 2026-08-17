@@ -54,7 +54,8 @@ object GifEncoder {
         out.write(0xF0)                       // GCT var, 8 bit renk çözünürlüğü, 2 giriş
         out.write(0)                          // arka plan rengi (kullanılmıyor)
         out.write(0)                          // piksel en-boy oranı (0 = belirsiz)
-        out.write(intArrayOf(0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF))  // siyah, beyaz
+        out.write(0x00); out.write(0x00); out.write(0x00)   // siyah, beyaz
+        out.write(0xFF); out.write(0xFF); out.write(0xFF)
 
         val frameSize = width * height
         for (frame in frames) {
