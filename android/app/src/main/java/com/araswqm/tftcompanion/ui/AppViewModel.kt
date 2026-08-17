@@ -20,6 +20,7 @@ import com.araswqm.tftcompanion.media.NowPlaying
 import com.araswqm.tftcompanion.media.NowPlayingBus
 import com.araswqm.tftcompanion.net.Esp32Api
 import com.araswqm.tftcompanion.net.WifiConnector
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -196,6 +197,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             Log.d(TAG, "Otomatik kapak hazır: ${prepared.fileName} (${prepared.sizeKb} KB)")
             uploadPrepared(prepared)
+        } catch (e: CancellationException) {
+            // Yeni bir şarkı geldiğinde collectLatest önceki gönderimi iptal eder;
+            // bu beklenen bir davranıştır, hata olarak gösterilmemeli.
+            Log.d(TAG, "Otomatik gönderim iptal edildi (yeni şarkı öncelikli)")
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Otomatik gönderim hatası: ${e.message}")
             showError("Otomatik gönderim başarısız: ${e.message}")
@@ -238,6 +244,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e   // beklenen iptal — hata olarak gösterilmemeli
+            } catch (e: Exception) {
                 Log.w(TAG, "Medya hazırlama hatası: ${e.message}")
                 showError("Medya hazırlanamadı: ${e.message}")
                 _ui.update { it.copy(working = false, progressLabel = null) }
@@ -267,6 +276,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 uploadPrepared(prepared)
                 showMessage("Gönderildi: ${prepared.fileName}")
+            } catch (e: CancellationException) {
+                throw e   // beklenen iptal — hata olarak gösterilmemeli
             } catch (e: Exception) {
                 showError("Gönderim başarısız: ${e.message}")
             } finally {
