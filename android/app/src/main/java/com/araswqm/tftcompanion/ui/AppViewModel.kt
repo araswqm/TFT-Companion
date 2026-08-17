@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -154,7 +155,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         // Otomatik mod medya akışı: debounce + gönderim
         viewModelScope.launch {
-            NowPlayingBus.flow.collectLatest { np ->
+            // AYNI şarkının tekrar eden emisyonlarını ele: müzik uygulamaları
+            // ilerleme çubuğunu güncellemek için bildirimi saniyede bir yeniler,
+            // MediaNotificationListener her güncellemede NowPlayingBus'a aynı
+            // şarkıyı yeniden basar. Dedup olmasa collectLatest her seferinde
+            // yavaş GIF hazırlığını iptal eder ve gönderim asla tamamlanmaz
+            // ("şarkı kapağı hazırlanıyor" gidip gelir, ekrana hiçbir şey gelmez).
+            // Anahtar: başlık + sanatçı + kapağın olup olmaması (önce kapaksız,
+            // sonra kapaklı iki emisyonun ikisi de geçsin; aynı şarkının
+            // sadece-kapak değişmeyen tekrarları elensin).
+            NowPlayingBus.flow
+                .distinctUntilChangedBy { Triple(it.title, it.artist, it.albumArt != null) }
+                .collectLatest { np ->
                 // Yarış düzeltmesi: MediaSessionWatcher (kapak yüklenmeden önce
                 // null yayınlayabilir) ve MediaNotificationListener aynı şarkı için
                 // aynı anda farklı emisyonlar üretebilir. Kapak zaten yüklendiyse
