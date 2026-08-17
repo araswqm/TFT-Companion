@@ -6,7 +6,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
 import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -50,6 +49,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private const val TAG = "AppViewModel"
         private const val AUTO_DEBOUNCE_MS = 1000L      // 800ms–1.5s aralığında
         private const val DEFAULT_MAX_BYTES = 700 * 1024L // status alınamazsa kullanılan varsayılan
+        // NetworkCapabilities.NET_CAPABILITY_LOCAL gizli bir API'dir (public
+        // android.jar'da yok). Yerel-ağ (WifiNetworkSpecifier) bağlantılarını ayırt
+        // etmek için ham değeri kullanılır; elle kurulan bağlantılarda bu bayrak yoktur.
+        private const val NET_CAPABILITY_LOCAL = 19
     }
 
     // ---- Durumlar ----
@@ -316,7 +319,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                         val isLocal = runCatching {
                             cm.getNetworkCapabilities(network)
-                                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL) == true
+                                ?.hasCapability(NET_CAPABILITY_LOCAL) == true
                         }.getOrDefault(false)
                         if (!isLocal) {
                             showMessage(
