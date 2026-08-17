@@ -19,7 +19,11 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.TftCompanion">
+        android:theme="@style/Theme.TftCompanion"
+        android:usesCleartextTraffic="true">
+        <!-- usesCleartextTraffic: ESP32 softAP yalnızca HTTP (http://192.168.4.1:80)
+             sunuyor. targetSdk >= 28 olduğundan varsayılan olarak cleartext engellenir,
+             bu yüzden tüm yerel ESP32 trafiği için açık olmalı. -->
 
         <activity
             android:name=".MainActivity"

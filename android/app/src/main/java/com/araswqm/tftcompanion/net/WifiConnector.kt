@@ -7,7 +7,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -59,9 +58,15 @@ class WifiConnector(context: Context) {
         val safeSsid = ssid.trim().ifEmpty { "ESP32-TFT" }
         val safePassword = password.trim().ifEmpty { "12345678" }
 
-        // Önce AP'nin görünür olduğundan emin olalım; değilse hızlıca bildir
-        if (!isApVisible(safeSsid)) {
-            Log.d(TAG, "AP '$safeSsid' yakında yok; ağ isteği yine de deneniyor (tarama gecikmeli)")
+        // Kullanıcı ESP32 ağına Ayarlar üzerinden elle bağlandıysa
+        // WifiNetworkSpecifier KULLANILMAZ: sistem zaten bağlı olan bir ağı
+        // specifier üzerinden yeniden tahsis edemez ve istek onUnavailable'a
+        // düşer (uygulama "ağ bulunamadı" hatası verir). Bu durumda telefonun
+        // zaten üzerinde olduğu Wi-Fi ağını (ESP32) doğrudan kullan.
+        findWifiNetwork(safeSsid)?.let { wifiNet ->
+            Log.d(TAG, "'$safeSsid' ağına zaten bağlı; mevcut Wi-Fi ağı kullanılıyor: $wifiNet")
+            mainHandler.post { onConnected(wifiNet) }
+            return
         }
 
         disconnect()
@@ -133,11 +138,42 @@ class WifiConnector(context: Context) {
         activeCallback = null
     }
 
-    private fun isApVisible(ssid: String): Boolean {
-        return runCatching {
-            val wm = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val wifi = wm.connectionInfo
-            wifi.ssid?.replace("\"", "") == ssid && wifi.networkId != -1
-        }.getOrDefault(false)
+    /**
+     * Şu an bağlı olan Wi-Fi ağlarından ESP32'ye ait olanı bulur.
+     *
+     * Eşleşme sırası:
+     *  1. NetworkCapabilities.getSSID() ile SSID karşılaştırması — API 29+'da
+     *     konum izni gerektirmez (WifiManager.connectionInfo.ssid'den farklı
+     *     olarak "<unknown ssid" kısıtlamasına takılmaz).
+     *  2. Ağ üzerindeki IP 192.168.4.x ise ESP32 softAP ağı say (firmware'in
+     *     softAPConfig'i 192.168.4.1/24 kullanır). Bazı cihazlar SSID alanını
+     *     boş bırakabilir; bu durumda IP kontrolüyle emin olunur.
+     */
+    private fun findWifiNetwork(ssid: String): Network? {
+        return cm.allNetworks.firstOrNull { net ->
+            val caps = cm.getNetworkCapabilities(net)
+            if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
+                return@firstOrNull false
+            }
+
+            // 1) SSID (konum izni gerektirmez, API 29+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val capSsid = caps.ssid?.trim('"')?.trim()
+                if (!capSsid.isNullOrEmpty()) {
+                    return@firstOrNull capSsid.equals(ssid, ignoreCase = true)
+                }
+            }
+
+            // 2) ESP32 softAP alt ağı (192.168.4.x)
+            val onEspSubnet = cm.getLinkProperties(net)?.linkAddresses.orEmpty().any { a ->
+                val addr = a.address
+                addr is java.net.Inet4Address &&
+                    addr.address.size == 4 &&
+                    addr.address[0] == 192.toByte() &&
+                    addr.address[1] == 168.toByte() &&
+                    addr.address[2] == 4.toByte()
+            }
+            onEspSubnet
+        }
     }
 }
