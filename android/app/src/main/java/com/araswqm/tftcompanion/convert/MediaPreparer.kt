@@ -29,7 +29,8 @@ typealias Progress = (done: Int, total: Int) -> Unit
  * Her tür medyayı ESP32 128x128 ST7735 ekranına uygun formata dönüştürür.
  *
  *  - Görüntü (JPEG/PNG)      -> 128x128 center-crop, JPEG
- *  - GIF                    -> frame'ler ayrıştırılıp 128x128 JPEG -> MJPEG paketi
+ *  - GIF                    -> 128x128 ve LittleFS'e sığıyorsa olduğu gibi iletilir;
+ *                              değilse 128x128 GIF olarak yeniden kodlanır (MJPEG'e çevrilmez)
  *  - Video (mp4/webm vb.)   -> MediaCodec/MediaExtractor ile decode, 128x128,
  *                              20 FPS (MJPEG_FRAME_MS=50) JPEG -> MJPEG paketi
  *
@@ -66,6 +67,12 @@ class MediaPreparer(private val context: Context) {
         // palet/ucCodeStart çöp okunur ve GIF "sadece üst kısım + glitchli" çözülür.
         private const val SPIN_START_COLORS = 64
         private const val SPIN_MIN_COLORS = 64         // palet bu kadar küçülürse dur
+
+        // Manuel galeri GIF'i: aynı 255-bayt AnimatedGIF penceresi LCT'yi sınırladığı
+        // için yeniden kodlama da 64 renkle tavanlanır (SPIN_START_COLORS yorumu).
+        private const val GIF_MAX_COLORS = 64
+        private const val GIF_MIN_COLORS = 8
+        private const val GIF_MIN_FRAMES = 6
     }
 
     data class PreparedFile(
@@ -234,56 +241,146 @@ class MediaPreparer(private val context: Context) {
 
     // ---------------------------------------------------------------- GIF
 
+    /** Yeniden kodlanacak GIF karesi: 128x128 ARGB piksel + süre (1/100 sn). */
+    private data class GifFrame(val pixels: IntArray, val delayCentis: Int)
+
     private fun prepareGif(uri: Uri, maxBytes: Long): PreparedFile {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("GIF okunamadı")
         // Kullanıcı GIF seçtiyse GIF olarak KALSIN — MJPEG'e çevirme. ESP32 zaten
-        // AnimatedGIF ile GIF oynatıyor (startGif). Boyut LittleFS'e sığıyorsa
-        // orijinal GIF olduğu gibi gönderilir; sığmıyorsa MJPEG'e düşülür.
-        if (bytes.size <= maxBytes) {
+        // AnimatedGIF ile GIF oynatıyor (startGif). Çözünürlük 128x128 VE boyut
+        // LittleFS'e sığıyorsa orijinal dosya olduğu gibi gönderilir; aksi halde
+        // GIF formatında yeniden kodlanır (kare/palet küçültme), MJPEG'e düşülmez.
+        val (w, h) = readGifDimensions(bytes)
+        if (w == SCREEN_SIZE && h == SCREEN_SIZE && bytes.size.toLong() <= maxBytes) {
             Log.d(TAG, "GIF passthrough: ${bytes.size} bayt (sınır $maxBytes)")
             return PreparedFile(bytes, "cover.gif")
         }
+        Log.d(TAG, "GIF yeniden kodlanacak: ${w}x$h ${bytes.size} bayt (sınır $maxBytes)")
         val gif = GifDrawable(bytes)
         return try {
-            val frames = renderGifFrames(gif)
-            Log.d(TAG, "GIF ${gif.numberOfFrames} kare -> MJPEG ${frames.size} kare")
-            buildMjpeg(frames, maxBytes)
+            val frames = renderGifFramesScaled(gif)
+            Log.d(TAG, "GIF ${gif.numberOfFrames} kare -> render ${frames.size} kare")
+            shrinkGifAsGif(frames, maxBytes)
         } finally {
             gif.recycle()
         }
     }
 
-    private fun renderGifFrames(gif: GifDrawable): List<Bitmap> {
-        // start() çağrılmaz: animasyon döngüsü seekToFrame ile yarışmasın diye
-        // kareler manuel (seekToFrame + draw) çizilir.
+    /**
+     * GIF karelerini 128x128 ARGB olarak render eder; kare başına süreyi (ms ->
+     * 1/100 sn) korur. MAX_FRAMES'i aşan GIF'lerde eşit aralıklı örnekleme yapılır:
+     * her bloğun son karesi alınır, blok süreleri toplanır — toplam animasyon süresi
+     * değişmez ve bellek sınırda kalır (kare başına 64 KB).
+     *
+     * start() çağrılmaz: animasyon döngüsü seekToFrame ile yarışmasın diye kareler
+     * manuel (seekToFrame + draw) çizilir.
+     */
+    private fun renderGifFramesScaled(gif: GifDrawable): List<GifFrame> {
         val w = gif.intrinsicWidth
         val h = gif.intrinsicHeight
         if (w <= 0 || h <= 0) throw IllegalStateException("GIF boyutu geçersiz")
+        val total = gif.numberOfFrames
+        val step = if (total > MAX_FRAMES) (total + MAX_FRAMES - 1) / MAX_FRAMES else 1
         val canvas = Canvas()
-        val frames = mutableListOf<Bitmap>()
-        var rendered = 0
+        val frames = ArrayList<GifFrame>(min(total, MAX_FRAMES))
 
-        for (i in 0 until gif.numberOfFrames) {
-            if (rendered >= MAX_FRAMES) break
-            gif.seekToFrame(i)
-            // Kare süresine göre kopya sayısı (ESP32 sabit 50ms/FPS kare hızında oynatır)
-            val durationMs = max(1, gif.getFrameDuration(i)) // int ms
-            val copies = min(MAX_FRAMES - rendered, ((durationMs + 49) / 50).coerceAtLeast(1))
-            repeat(copies) {
-                val frame = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                canvas.setBitmap(frame)
-                canvas.drawColor(Color.WHITE) // şeffaf GIF kareleri için zemin
-                // GifDrawable bir Drawable'dır; Canvas'a draw() ile çizilir (Bitmap değil).
-                gif.setBounds(0, 0, w, h)
-                gif.draw(canvas)
-                frames.add(centerCrop(frame, SCREEN_SIZE))
-                if (frame.width != SCREEN_SIZE) frame.recycle()
-                rendered++
-                if (rendered >= MAX_FRAMES) return@repeat
-            }
+        var idx = 0
+        while (idx < total) {
+            // Blok [idx, idx+step): son kareyi çiz, tüm bloğun süresini topla
+            val end = min(idx + step, total)
+            var blockMs = 0
+            for (k in idx until end) blockMs += gif.getFrameDuration(k).coerceAtLeast(1)
+            gif.seekToFrame(end - 1)
+            val frame = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            canvas.setBitmap(frame)
+            canvas.drawColor(Color.WHITE) // şeffaf GIF kareleri için zemin
+            // GifDrawable bir Drawable'dır; Canvas'a draw() ile çizilir (Bitmap değil).
+            gif.setBounds(0, 0, w, h)
+            gif.draw(canvas)
+            val scaled = centerCrop(frame, SCREEN_SIZE)
+            if (scaled != frame) frame.recycle()
+            val px = IntArray(SCREEN_SIZE * SCREEN_SIZE)
+            scaled.getPixels(px, 0, SCREEN_SIZE, 0, 0, SCREEN_SIZE, SCREEN_SIZE)
+            scaled.recycle()
+            frames.add(GifFrame(px, ((blockMs + 9) / 10).coerceAtLeast(1)))
+            idx = end
         }
         return frames
+    }
+
+    /**
+     * GIF'i GIF olarak küçültür: önce kare sayısını (toplam süreyi koruyarak),
+     * sonra paleti azaltır. AnimatedGIF'ın 255-bayt okuma penceresi LCT'yi sınırladığı
+     * için 64 rengin üzerine çıkılmaz (SPIN_START_COLORS yorumuna bakın).
+     */
+    private fun shrinkGifAsGif(frames: List<GifFrame>, maxBytes: Long): PreparedFile {
+        val colorSets = intArrayOf(GIF_MAX_COLORS, 32, 16, GIF_MIN_COLORS)
+        var best: ByteArray? = null
+        for (fc in buildFrameCountLadder(frames.size)) {
+            val subset = downsampleFrames(frames, fc)
+            val px = ArrayList<IntArray>(subset.size)
+            val delays = IntArray(subset.size)
+            for ((i, f) in subset.withIndex()) {
+                px.add(f.pixels)
+                delays[i] = f.delayCentis
+            }
+            for (colors in colorSets) {
+                val gif = GifEncoder.encode(px, SCREEN_SIZE, SCREEN_SIZE, delays, colors)
+                if (gif.size <= maxBytes) {
+                    Log.d(TAG, "GIF yeniden kodlandı: ${subset.size} kare, $colors renk, ${gif.size} bayt")
+                    return PreparedFile(gif, "cover.gif")
+                }
+                best = gif
+            }
+        }
+        val smallest = best ?: throw IllegalStateException("GIF üretilemedi")
+        Log.w(TAG, "GIF ${smallest.size} bayt ile sınıra sığmıyor; en küçük aday gönderiliyor")
+        return PreparedFile(smallest, "cover.gif")
+    }
+
+    /** Kare sayısı merdiveni: n -> ceil-halving -> GIF_MIN_FRAMES (süre korunur). */
+    private fun buildFrameCountLadder(n: Int): IntArray {
+        val out = ArrayList<Int>()
+        var count = n
+        while (true) {
+            out.add(count)
+            if (count <= GIF_MIN_FRAMES) break
+            count = ((count + 1) / 2).coerceAtLeast(GIF_MIN_FRAMES)
+        }
+        return out.toIntArray()
+    }
+
+    /** Kareleri [target] sayısına indirir: her bloktan son kare, blok süreleri toplanır. */
+    private fun downsampleFrames(frames: List<GifFrame>, target: Int): List<GifFrame> {
+        if (target >= frames.size) return frames
+        val n = frames.size
+        val out = ArrayList<GifFrame>(target)
+        for (k in 0 until target) {
+            val lo = k * n / target
+            val hi = max((k + 1) * n / target, lo + 1)
+            var sum = 0
+            var last = frames[lo]
+            for (j in lo until hi) {
+                sum += frames[j].delayCentis
+                last = frames[j]
+            }
+            out.add(GifFrame(last.pixels, sum.coerceAtLeast(1)))
+        }
+        return out
+    }
+
+    /** GIF başlığından mantıksal ekran boyutunu okur (imza doğrulamalı, ucuz). */
+    private fun readGifDimensions(bytes: ByteArray): Pair<Int, Int> {
+        if (bytes.size < 10 || bytes[0] != 0x47.toByte() || bytes[1] != 0x49.toByte()
+            || bytes[2] != 0x46.toByte()
+        ) {
+            throw IllegalStateException("GIF imzası geçersiz")
+        }
+        val w = (bytes[6].toInt() and 0xFF) or ((bytes[7].toInt() and 0xFF) shl 8)
+        val h = (bytes[8].toInt() and 0xFF) or ((bytes[9].toInt() and 0xFF) shl 8)
+        if (w <= 0 || h <= 0) throw IllegalStateException("GIF boyutu geçersiz")
+        return w to h
     }
 
     private fun decodeGifFirstFrame(uri: Uri): Bitmap? =

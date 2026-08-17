@@ -24,21 +24,31 @@ object GifEncoder {
     private const val EOI_CODE = CLEAR_CODE + 1             // 257
     private const val MAX_TABLE = 4096                      // 2^12 (LZW sınırı)
 
-    /**
-     * Kareleri animasyonlu GIF olarak paketler.
-     *
-     * @param frames ARGB piksel dizileri (her biri width*height uzunluğunda, opak)
-     * @param delayCentis kare başına süre (1/100 sn; ESP32 AnimatedGIF bunu ms'e çevirir)
-     * @param maxColors kare başına renk tablosu üst sınırı (8..256)
-     */
+    /** Tüm karelere tek bir süre atar (tek-biçimli animasyonlar için). */
     fun encode(
         frames: List<IntArray>,
         width: Int,
         height: Int,
         delayCentis: Int,
         maxColors: Int = 256,
+    ): ByteArray = encode(frames, width, height, IntArray(frames.size) { delayCentis }, maxColors)
+
+    /**
+     * Kareleri animasyonlu GIF olarak paketler; her kare için ayrı süre.
+     *
+     * @param frames ARGB piksel dizileri (her biri width*height uzunluğunda, opak)
+     * @param delaysCentis kare başına süre (1/100 sn; ESP32 AnimatedGIF bunu ms'e çevirir)
+     * @param maxColors kare başına renk tablosu üst sınırı (8..256)
+     */
+    fun encode(
+        frames: List<IntArray>,
+        width: Int,
+        height: Int,
+        delaysCentis: IntArray,
+        maxColors: Int = 256,
     ): ByteArray {
         require(frames.isNotEmpty()) { "En az bir kare gerekli" }
+        require(delaysCentis.size == frames.size) { "Kare başına süre sayısı kare sayısıyla eşleşmeli" }
         require(maxColors in 8..256) { "maxColors 8..256 olmalı" }
         val out = ByteArrayOutputStream()
 
@@ -58,13 +68,13 @@ object GifEncoder {
         out.write(0xFF); out.write(0xFF); out.write(0xFF)
 
         val frameSize = width * height
-        for (frame in frames) {
+        for ((i, frame) in frames.withIndex()) {
             require(frame.size == frameSize) { "Kare boyutu width*height olmalı" }
 
             // --- Graphic Control Extension: süre + disposal=1 (yerinde bırak) ---
             out.write(0x21); out.write(0xF9); out.write(0x04)
             out.write(0x04)                   // disposal=1, saydamlık yok
-            writeU16(out, delayCentis)
+            writeU16(out, delaysCentis[i].coerceIn(1, 65535))
             out.write(0)                      // saydam renk indeksi (yok)
             out.write(0)                      // blok sonu
 
