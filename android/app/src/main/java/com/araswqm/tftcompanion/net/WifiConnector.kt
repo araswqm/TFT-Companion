@@ -158,7 +158,8 @@ class WifiConnector(context: Context) {
 
             // 1) SSID (konum izni gerektirmez, API 29+)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val capSsid = caps.ssid?.trim('"')?.trim()
+                // Kotlin'de getSSID() -> property adı 'SSID' olur (akronim korunur)
+                val capSsid = caps.SSID?.trim('"')?.trim()
                 if (!capSsid.isNullOrEmpty()) {
                     return@firstOrNull capSsid.equals(ssid, ignoreCase = true)
                 }
