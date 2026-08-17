@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Handler
@@ -141,32 +142,35 @@ class WifiConnector(context: Context) {
     /**
      * Şu an bağlı olan Wi-Fi ağlarından ESP32'ye ait olanı bulur.
      *
-     * Eşleşme sırası:
-     *  1. NetworkCapabilities.getSSID() ile SSID karşılaştırması — API 29+'da
-     *     konum izni gerektirmez (WifiManager.connectionInfo.ssid'den farklı
-     *     olarak "<unknown ssid" kısıtlamasına takılmaz).
-     *  2. Ağ üzerindeki IP 192.168.4.x ise ESP32 softAP ağı say (firmware'in
-     *     softAPConfig'i 192.168.4.1/24 kullanır). Bazı cihazlar SSID alanını
-     *     boş bırakabilir; bu durumda IP kontrolüyle emin olunur.
+     * NOT: NetworkCapabilities.getSSID() Android'de gizli (hidden) API'dir —
+     * public SDK'da yoktur, o yüzden SSID oradan okunamaz. Eşleşme sırası:
+     *  1. Ağ üzerindeki IP 192.168.4.x ise ESP32 softAP ağı say — firmware'in
+     *     softAPConfig'i 192.168.4.1/24 kullanır ve bu, konum izni gerektirmeyen
+     *     kesin bir işarettir.
+     *  2. WifiManager.connectionInfo.ssid — Android 10+ konum izni olmadan
+     *     "<unknown ssid" döndürür; yalnızca gerçek değer geldiğinde karşılaştır
+     *     (izin verilmişse). İzinsiz durumda 1. adım zaten yeterli.
      */
     private fun findWifiNetwork(ssid: String): Network? {
+        // Android 10+ konum izni olmadan "<unknown ssid" döner; gerçek değer
+        // geldiğinde SSID karşılaştırması yapılır. runCatching: OEM sapmaları
+        // ve izin istisnalarına karşı ana iş parçacığını çöktürme.
+        val currentSsid = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                (appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+                    .connectionInfo.getSSID()?.trim('"')?.trim()
+            }.getOrNull()
+        } else {
+            null
+        }
+
         return cm.allNetworks.firstOrNull { net ->
             val caps = cm.getNetworkCapabilities(net)
             if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) != true) {
                 return@firstOrNull false
             }
 
-            // 1) SSID (konum izni gerektirmez, API 29+)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // getSSID() akronim getter olduğundan Kotlin property adı
-                // belirsizdir (ne 'ssid' ne 'SSID' derlenir); metodu doğrudan çağır.
-                val capSsid = caps.getSSID()?.trim('"')?.trim()
-                if (!capSsid.isNullOrEmpty()) {
-                    return@firstOrNull capSsid.equals(ssid, ignoreCase = true)
-                }
-            }
-
-            // 2) ESP32 softAP alt ağı (192.168.4.x)
+            // 1) ESP32 softAP alt ağı (192.168.4.x)
             val onEspSubnet = cm.getLinkProperties(net)?.linkAddresses.orEmpty().any { a ->
                 val addr = a.address
                 addr is java.net.Inet4Address &&
@@ -175,7 +179,14 @@ class WifiConnector(context: Context) {
                     addr.address[1] == 168.toByte() &&
                     addr.address[2] == 4.toByte()
             }
-            onEspSubnet
+            if (onEspSubnet) return@firstOrNull true
+
+            // 2) Yedek SSID eşleşmesi (konum izni varsa gerçek değer gelir)
+            if (!currentSsid.isNullOrEmpty() && !currentSsid.startsWith("<unknown", ignoreCase = true)) {
+                return@firstOrNull currentSsid.equals(ssid, ignoreCase = true)
+            }
+
+            false
         }
     }
 }
