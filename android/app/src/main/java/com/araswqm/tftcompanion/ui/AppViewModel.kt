@@ -163,17 +163,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val preview = preparer.previewFrame(uri, contentType)
                 val maxBytes = queryMaxBytes()
                 val prepared = withContext(Dispatchers.Default) {
-                    val pb = object : MediaPreparer.Progress {
-                        override fun invoke(done: Int, total: Int) {
-                            _ui.update {
-                                it.copy(
-                                    working = true,
-                                    progressLabel = "Dönüştürülüyor… $done kare",
-                                )
-                            }
+                    preparer.prepare(uri, contentType, maxBytes) { done, _ ->
+                        _ui.update {
+                            it.copy(
+                                working = true,
+                                progressLabel = "Dönüştürülüyor… $done kare",
+                            )
                         }
                     }
-                    preparer.prepare(uri, contentType, maxBytes, pb)
                 }
                 manualDraft = ManualDraft(uri, contentType, prepared)
                 _ui.update {
@@ -244,17 +241,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     val newApi = Esp32Api(network)
                     api = newApi
                     _ui.update { it.copy(connState = ConnState.CONNECTED) }
-                    if (cont.isActive) cont.resume(newApi)
+                    if (cont.isActive) cont.resumeWith(Result.success(newApi))
                 },
                 onUnavailable = { msg ->
                     Log.w(TAG, "Bağlantı başarısız: $msg")
                     _ui.update { it.copy(connState = ConnState.ERROR) }
-                    if (cont.isActive) cont.resume(null)
+                    if (cont.isActive) cont.resumeWith(Result.success<Esp32Api?>(null))
                 },
                 onOpenWifiSettings = {
                     // API < 29: kullanıcıyı ayarlara yönlendir
                     openWifiSettings()
-                    if (cont.isActive) cont.resume(null)
+                    if (cont.isActive) cont.resumeWith(Result.success<Esp32Api?>(null))
                 },
             )
             cont.invokeOnCancellation { wifiConnector.disconnect() }

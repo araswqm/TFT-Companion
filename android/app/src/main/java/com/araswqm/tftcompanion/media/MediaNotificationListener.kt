@@ -64,10 +64,10 @@ class MediaNotificationListener : NotificationListenerService() {
             return loadUri(Uri.parse(uri))
         }
         // Son çare: bildirim küçük ikonu bile kullanılabilir
-        n.smallIcon?.let { id ->
-            runCatching {
-                val pkg = packageManager.getResourcesForApplication(n.smallIcon.resPackage)
-                pkg.getDrawable(id)?.let { d ->
+        n.smallIcon?.let { icon ->
+            return runCatching {
+                val pkg = packageManager.getResourcesForApplication(icon.resPackage)
+                pkg.getDrawable(icon.resId)?.let { d ->
                     val b = Bitmap.createBitmap(d.intrinsicWidth, d.intrinsicHeight, Bitmap.Config.ARGB_8888)
                     // Drawable -> Bitmap (Canvas ile çizim)
                     val c = android.graphics.Canvas(b)
@@ -77,6 +77,7 @@ class MediaNotificationListener : NotificationListenerService() {
                 }
             }.getOrNull()
         }
+        return null
     }
 
     private fun loadUri(uri: Uri): Bitmap? = runCatching {

@@ -53,16 +53,6 @@ fun MainScreen(
     onOpenNls: () -> Unit,
     isNlsGranted: Boolean,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri != null) {
-            val type = runCatching { context.contentResolver.getType(uri) }.getOrNull()
-            onPickMedia(uri, type)
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -201,6 +191,15 @@ private fun AutoModeCard(state: AppViewModel.UiState, onStartWatching: () -> Uni
 
 @Composable
 private fun ManualModeCard(onPickMedia: (android.net.Uri, String?) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val type = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+            onPickMedia(uri, type)
+        }
+    }
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Manuel Medya", style = MaterialTheme.typography.titleMedium)

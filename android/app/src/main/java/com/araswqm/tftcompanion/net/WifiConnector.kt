@@ -67,7 +67,7 @@ class WifiConnector(context: Context) {
                 setSsid(ssid)
             } else {
                 // API 29: setSsidPattern ile tam eşleşme
-                setSsidPattern(android.util.PatternMatcher(ssid, android.util.PatternMatcher.PATTERN_LITERAL))
+                setSsidPattern(android.os.PatternMatcher(ssid, android.os.PatternMatcher.PATTERN_LITERAL))
             }
             setWpa2Passphrase(password)
         }.build()

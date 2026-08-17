@@ -40,6 +40,9 @@ class MediaPreparer(private val context: Context) {
         private const val MAX_FRAMES = 120      // 20 FPS => ~6 saniyelik döngü
         private const val JPEG_MIN_QUALITY = 25
         private const val JPEG_START_QUALITY = 90
+
+        /** İlerleme geri çağrısı: (tamamlanan, toplam) — toplam video/GIF'te -1 olabilir. */
+        typealias Progress = (done: Int, total: Int) -> Unit
     }
 
     data class PreparedFile(
@@ -49,8 +52,6 @@ class MediaPreparer(private val context: Context) {
     ) {
         val sizeKb: Int get() = bytes.size / 1024
     }
-
-    typealias Progress = (done: Int, total: Int) -> Unit
 
     /**
      * URI'deki medyayı türüne göre hazırlar.
@@ -143,10 +144,10 @@ class MediaPreparer(private val context: Context) {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("GIF okunamadı")
 
-        GifDrawable(bytes).use { gif ->
+        return GifDrawable(bytes).use { gif ->
             val frames = renderGifFrames(gif)
             Log.d(TAG, "GIF ${gif.numberOfFrames} kare -> MJPEG ${frames.size} kare")
-            return buildMjpeg(frames, maxBytes)
+            buildMjpeg(frames, maxBytes)
         }
     }
 
@@ -180,13 +181,11 @@ class MediaPreparer(private val context: Context) {
         return frames
     }
 
-    private fun decodeGifFirstFrame(uri: Uri): Bitmap? {
+    private fun decodeGifFirstFrame(uri: Uri): Bitmap? =
         context.contentResolver.openInputStream(uri)?.use { stream ->
             // BitmapFactory GIF'in ilk karesini verir (önceki kareleri saymaz)
-            return decodeSampledStream(stream, SCREEN_SIZE * 2)?.let { centerCrop(it, SCREEN_SIZE) }
+            decodeSampledStream(stream, SCREEN_SIZE * 2)?.let { centerCrop(it, SCREEN_SIZE) }
         }
-        return null
-    }
 
     // ---------------------------------------------------------------- Video
 
