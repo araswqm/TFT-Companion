@@ -5,12 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.util.Log
+import com.araswqm.tftcompanion.R
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import kotlin.math.max
@@ -36,12 +38,29 @@ typealias Progress = (done: Int, total: Int) -> Unit
  */
 class MediaPreparer(private val context: Context) {
 
+    /** vinyl_overlay.png 128x128'e kırpılmış halde bir kez yüklenir (önbellekli). */
+    private val vinylOverlay: Bitmap? by lazy {
+        runCatching {
+            BitmapFactory.decodeResource(context.resources, R.drawable.vinyl_overlay)
+        }.getOrNull()?.let { centerCrop(it, SCREEN_SIZE) }
+    }
+
     companion object {
         private const val TAG = "MediaPreparer"
         const val SCREEN_SIZE = 128
         private const val MAX_FRAMES = 120      // 20 FPS => ~6 saniyelik döngü
         private const val JPEG_MIN_QUALITY = 25
         private const val JPEG_START_QUALITY = 90
+
+        // Otomatik mod plak animasyonu: kapak sabit vinyl_overlay'in arkasında
+        // saat yönünün tersine (negatif açı) döner. Kare sayısı LittleFS boyutuna
+        // uyması için azaltılabilir; dönüş hızı sabit kalsın diye tur süresi
+        // korunur (SPIN_REVOLUTION_MS / frameCount => kare başına süre).
+        private const val SPIN_FRAME_COUNT = 24        // başlangıç: 24 kare
+        private const val SPIN_MIN_FRAME_COUNT = 6     // en az 6 kare (görsel kalite)
+        private const val SPIN_REVOLUTION_MS = 2400    // bir tam tur = 2.4 s
+        private const val SPIN_START_COLORS = 256
+        private const val SPIN_MIN_COLORS = 64         // palet bu kadar küçülürse dur
     }
 
     data class PreparedFile(
@@ -106,13 +125,84 @@ class MediaPreparer(private val context: Context) {
         }
     }
 
-    /** Otomatik mod: doğrudan albüm kapağı Bitmap'ini 128x128 JPEG'e çevirir. */
+    /**
+     * Otomatik mod: albüm kapağını vinyl_overlay arkasında dönen animasyonlu
+     * GIF'e çevirir (plak etkisi). Overlay yüklenemezse eski davranışa (tek
+     * kare JPEG) düşer.
+     */
     suspend fun prepareBitmap(src: Bitmap, maxBytes: Long): PreparedFile = withContext(Dispatchers.Default) {
-        val square = centerCrop(src, SCREEN_SIZE)
-        val quality = fitQuality(square, maxBytes)
-        val jpeg = encodeJpeg(square, quality)
-        Log.d(TAG, "Albüm kapağı -> JPEG kalite=$quality ${jpeg.size} bayt")
-        PreparedFile(jpeg, "cover.jpg")
+        val overlay = vinylOverlay
+        if (overlay == null) {
+            Log.w(TAG, "vinyl_overlay çözülemedi, tek kare JPEG'e düşülüyor")
+            val square = centerCrop(src, SCREEN_SIZE)
+            val quality = fitQuality(square, maxBytes)
+            val jpeg = encodeJpeg(square, quality)
+            Log.d(TAG, "Albüm kapağı -> JPEG kalite=$quality ${jpeg.size} bayt")
+            return@withContext PreparedFile(jpeg, "cover.jpg")
+        }
+        prepareSpinGif(src, overlay, maxBytes)
+    }
+
+    // ---------------------------------------------------- Plak animasyonu
+
+    /**
+     * Albüm kapağını overlay arkasında CCW döndürüp GIF'e paketler. Boyut
+     * LittleFS sınırını aşarsa önce kare sayısı (24 -> 12 -> 6), sonra palet
+     * (256 -> 128 -> 64) küçültülerek yeniden dener; hiçbiri sığmazsa en küçük
+     * aday yine de gönderilir (ESP32 dosyayı reddedebilir).
+     */
+    private fun prepareSpinGif(src: Bitmap, overlay: Bitmap, maxBytes: Long): PreparedFile {
+        val art = centerCrop(src, SCREEN_SIZE)
+        val frameCounts = intArrayOf(
+            SPIN_FRAME_COUNT,
+            (SPIN_FRAME_COUNT / 2).coerceAtLeast(SPIN_MIN_FRAME_COUNT),
+            SPIN_MIN_FRAME_COUNT,
+        )
+        val colorSets = intArrayOf(SPIN_START_COLORS, 128, SPIN_MIN_COLORS)
+
+        var best: ByteArray? = null
+        for (fc in frameCounts) {
+            val delayCs = (SPIN_REVOLUTION_MS / fc / 10).coerceAtLeast(1)
+            val frames = renderSpinFrames(art, overlay, fc)
+            for (colors in colorSets) {
+                val gif = GifEncoder.encode(frames, SCREEN_SIZE, SCREEN_SIZE, delayCs, colors)
+                if (gif.size <= maxBytes) {
+                    Log.d(TAG, "Plak GIF hazır: ${fc} kare, ${colors} renk, ${gif.size} bayt")
+                    return PreparedFile(gif, "cover.gif")
+                }
+                best = gif
+            }
+        }
+        val smallest = best ?: throw IllegalStateException("GIF üretilemedi")
+        Log.w(TAG, "Plak GIF ${smallest.size} bayt ile sınıra sığmıyor; en küçük aday gönderiliyor")
+        return PreparedFile(smallest, "cover.gif")
+    }
+
+    /**
+     * Kareleri üretir: kapak her karede negatif açıyla (CCW) döndürülür, üstüne
+     * sabit overlay SRC_OVER ile bindirilir. Negatif açı = Android'in y-aşağı
+     * canvas'ında saat yönünün tersi dönüş.
+     */
+    private fun renderSpinFrames(art: Bitmap, overlay: Bitmap, frameCount: Int): List<IntArray> {
+        val frames = ArrayList<IntArray>(frameCount)
+        val paint = Paint().apply { isFilterBitmap = true }
+        val stepDeg = 360f / frameCount
+        val cx = SCREEN_SIZE / 2f
+        val cy = SCREEN_SIZE / 2f
+        val px = IntArray(SCREEN_SIZE * SCREEN_SIZE)
+
+        for (i in 0 until frameCount) {
+            val frame = Bitmap.createBitmap(SCREEN_SIZE, SCREEN_SIZE, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(frame)
+            canvas.rotate(-i * stepDeg, cx, cy)   // kapak CCW döner
+            canvas.drawBitmap(art, 0f, 0f, paint)
+            canvas.rotate(i * stepDeg, cx, cy)    // dönüşü geri al: overlay sabit
+            canvas.drawBitmap(overlay, 0f, 0f, null)
+            frame.getPixels(px, 0, SCREEN_SIZE, 0, 0, SCREEN_SIZE, SCREEN_SIZE)
+            frame.recycle()
+            frames.add(px.copyOf())
+        }
+        return frames
     }
 
     // ---------------------------------------------------------------- Görüntü
