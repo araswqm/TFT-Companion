@@ -47,6 +47,7 @@ fun AppScreen(viewModel: AppViewModel) {
                     onStartWatching = viewModel::startWatching,
                     onSaveEsp32 = viewModel::saveEsp32Settings,
                     onOpenNls = viewModel::openNotificationSettings,
+                    onConnect = viewModel::connect,
                     isNlsGranted = viewModel.isNotificationAccessGranted(),
                 )
                 is AppViewModel.Screen.Preview -> PreviewScreen(

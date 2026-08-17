@@ -51,6 +51,7 @@ fun MainScreen(
     onStartWatching: () -> Unit,
     onSaveEsp32: (String, String, String, Int) -> Unit,
     onOpenNls: () -> Unit,
+    onConnect: () -> Unit,
     isNlsGranted: Boolean,
 ) {
     Column(
@@ -79,7 +80,7 @@ fun MainScreen(
         }
 
         // Bağlantı durumu
-        ConnStatusCard(state)
+        ConnStatusCard(state, onConnect)
 
         when (state.mode) {
             MediaMode.AUTO -> AutoModeCard(state, onStartWatching)
@@ -110,32 +111,55 @@ private fun ModeSelector(current: MediaMode, onModeChange: (MediaMode) -> Unit) 
 }
 
 @Composable
-private fun ConnStatusCard(state: AppViewModel.UiState) {
+private fun ConnStatusCard(state: AppViewModel.UiState, onConnect: () -> Unit) {
     val (color, text) = when (state.connState) {
         AppViewModel.ConnState.IDLE -> Color(0xFF8A8A9A) to "Bağlantı yok"
         AppViewModel.ConnState.CONNECTING -> Color(0xFFFFA500) to "ESP32'ye bağlanılıyor…"
         AppViewModel.ConnState.CONNECTED -> Color(0xFF4CAF50) to "ESP32 bağlı"
         AppViewModel.ConnState.ERROR -> Color(0xFFE94560) to "Bağlantı hatası"
     }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(color.copy(alpha = 0.15f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-    ) {
-        Box(
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .size(10.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(color),
-        )
-        Spacer(Modifier.size(8.dp))
-        Text(text, color = MaterialTheme.colorScheme.onSurface)
-        Spacer(Modifier.weight(1f))
-        if (state.working) {
-            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(color.copy(alpha = 0.15f))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(color),
+            )
+            Spacer(Modifier.size(8.dp))
+            Text(text, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.weight(1f))
+            if (state.working) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+        }
+
+        // Bağlı değilken kullanıcıya elle bağlanma imkânı + internet ipucu.
+        // "Bağlan" uygulama üzerinden WifiNetworkSpecifier ile bağlanır (telefonun
+        // interneti korunur); Ayarlar'dan elle bağlanırsa internet kesilir.
+        if (state.connState == AppViewModel.ConnState.IDLE ||
+            state.connState == AppViewModel.ConnState.ERROR
+        ) {
+            Button(
+                onClick = onConnect,
+                enabled = !state.working,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (state.connState == AppViewModel.ConnState.ERROR) "Tekrar Bağlan" else "ESP32'ye Bağlan")
+            }
+            Text(
+                "Ayarlar'dan ESP32 ağına elle bağlanmayın — telefonun interneti kesilir. "
+                    + "Bu butonla bağlandığınızda internetiniz korunur.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

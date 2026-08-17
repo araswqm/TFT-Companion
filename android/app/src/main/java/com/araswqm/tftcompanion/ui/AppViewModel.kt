@@ -4,7 +4,9 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
@@ -27,6 +29,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -85,12 +89,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val settingsRepository: SettingsRepository =
         (application as com.araswqm.tftcompanion.TftCompanionApp).settingsRepository
+
+    // Kalıcı ayarların senkron okunabilir (StateFlow) kopyası. ensureApi() bunu
+    // kullanır ki soğuk başlangıçta _ui.value.settings henüz doldurulmamış olsa
+    // bile bağlantı eski/boş ayarlarla yapılmasın.
+    private val settingsState: StateFlow<AppSettings> = settingsRepository.settings
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
+
     private val preparer = MediaPreparer(application)
     private val wifiConnector = WifiConnector(application)
 
     private var api: Esp32Api? = null
     private var boundNetwork: Network? = null
     private var manualDraft: ManualDraft? = null
+    private var manualNetWarned = false  // elle ESP32'ye bağlanma uyarısı oturumda bir kez
 
     private data class ManualDraft(
         val uri: android.net.Uri,
@@ -115,14 +127,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Ana ekran açıldığında ESP32'ye otomatik bağlan. Bu, kullanıcı "fotoğraf
+        // seç ve gönder" demeden durum kartının "ESP32 bağlı" göstermesini sağlar.
+        // connect() zaten CONNECTED/CONNECTING durumlarını yinelenen bağlantıya
+        // karşı korur, bu yüzden Preview'dan dönüşlerde yeniden tetiklenmesi zararsızdır.
+        viewModelScope.launch {
+            _ui.map { it.screen }
+                .distinctUntilChanged()
+                .collect { screen ->
+                    if (screen == Screen.Main) connect()
+                }
+        }
+
         // Otomatik mod medya akışı: debounce + gönderim
         viewModelScope.launch {
             NowPlayingBus.flow.collectLatest { np ->
-                Log.d(TAG, "Yeni medya: '${np.title}' (debounce $AUTO_DEBOUNCE_MS ms)")
-                _ui.update { it.copy(nowPlaying = np) }
+                // Yarış düzeltmesi: MediaSessionWatcher (kapak yüklenmeden önce
+                // null yayınlayabilir) ve MediaNotificationListener aynı şarkı için
+                // aynı anda farklı emisyonlar üretebilir. Kapak zaten yüklendiyse
+                // null-kapak emisyonu onu ezmesin — aynı şarkının kapsız haliyle
+                // değiştirilmez (yoksa otomatik gönderim kapağı kaybeder).
+                val current = _ui.value.nowPlaying
+                val effective = if (np.albumArt == null &&
+                    current?.title == np.title &&
+                    current.artist == np.artist &&
+                    current.albumArt != null
+                ) {
+                    current
+                } else {
+                    np
+                }
+                Log.d(TAG, "Yeni medya: '${effective.title}' (debounce $AUTO_DEBOUNCE_MS ms)")
+                _ui.update { it.copy(nowPlaying = effective) }
                 delay(AUTO_DEBOUNCE_MS)  // yeni medya gelirse önceki iptal olur
                 if (_ui.value.mode == MediaMode.AUTO) {
-                    handleAutoNowPlaying(np)
+                    handleAutoNowPlaying(effective)
                 }
             }
         }
@@ -234,10 +273,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun queryMaxBytes(): Long {
         val api = ensureApi() ?: return DEFAULT_MAX_BYTES
         return withContext(Dispatchers.IO) {
-            api.getStatus(_ui.value.settings.baseUrl)?.freeSpace
+            api.getStatus(settingsState.value.baseUrl)?.freeSpace
                 ?.takeIf { it > 0 }
                 ?: DEFAULT_MAX_BYTES
         }
+    }
+
+    /**
+     * ESP32'ye şimdi bağlan — durum kartındaki "ESP32'ye Bağlan" butonundan ve
+     * ana ekran açılışında otomatik olarak çağrılır. Zaten bağlıyken veya
+     * bağlanma sürerken yinelenen istek yapmaz.
+     */
+    fun connect() {
+        val state = _ui.value
+        if (state.connState == ConnState.CONNECTING || state.connState == ConnState.CONNECTED) return
+        if (state.working) return  // gönderim sürerken bağlantıyı bozma
+        viewModelScope.launch { ensureApi() }
     }
 
     /**
@@ -246,7 +297,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun ensureApi(): Esp32Api? {
         api?.let { return it }
-        val settings = _ui.value.settings
+        val settings = settingsState.value
         _ui.update { it.copy(connState = ConnState.CONNECTING) }
         return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
             wifiConnector.connect(
@@ -254,6 +305,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 password = settings.password,
                 onConnected = { network ->
                     Log.d(TAG, "ESP32 ağı bağlı: $network")
+                    // Kullanıcı Ayarlar'dan ESP32 ağına elle bağlandıysa WifiConnector o
+                    // ağı yeniden kullanır (specifier bağlantısı kurulamaz). Böyle bir
+                    // ağda NET_CAPABILITY_LOCAL yoktur; telefon interneti kaybeder.
+                    // Uyarıyı oturumda bir kez göster, OEM ROM'larda yanlış pozitif
+                    // ihtimaline karşı sinir bozucu olmasın.
+                    if (!manualNetWarned) {
+                        manualNetWarned = true
+                        val cm = getApplication<Application>()
+                            .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                        val isLocal = runCatching {
+                            cm.getNetworkCapabilities(network)
+                                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL) == true
+                        }.getOrDefault(false)
+                        if (!isLocal) {
+                            showMessage(
+                                "ESP32'ye elle bağlısınız — telefonun interneti kesik olabilir. " +
+                                    "Wi-Fi Ayarları'ndan bu ağdan çıkıp 'Bağlan' butonunu kullanın."
+                            )
+                        }
+                    }
                     boundNetwork = network
                     val newApi = Esp32Api(network)
                     api = newApi
@@ -289,7 +360,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun uploadPrepared(prepared: MediaPreparer.PreparedFile) {
         val api = ensureApi() ?: throw IllegalStateException("ESP32'ye bağlanılamadı")
-        val base = _ui.value.settings.baseUrl
+        val base = settingsState.value.baseUrl
         val resp = withContext(Dispatchers.IO) {
             api.upload(base, prepared.bytes, prepared.fileName)
         }

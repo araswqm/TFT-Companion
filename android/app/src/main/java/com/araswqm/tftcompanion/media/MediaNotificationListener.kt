@@ -74,6 +74,27 @@ class MediaNotificationListener : NotificationListenerService() {
         if (uri != null) {
             return loadUri(Uri.parse(uri))
         }
+
+        // Çoğu müzik uygulaması kapağı metadata'ya DEĞİL bildirimin büyük
+        // ikonuna (largeIcon) koyar (ör. Meld Music). getLargeIcon() -> Icon
+        // -> Bitmap. Icon.loadDrawable bir Context ister; service bir Context'tir.
+        val largeIcon: Bitmap? = try {
+            n.getLargeIcon()?.loadDrawable(this)?.let { d ->
+                val b = Bitmap.createBitmap(d.intrinsicWidth, d.intrinsicHeight, Bitmap.Config.ARGB_8888)
+                val c = android.graphics.Canvas(b)
+                d.setBounds(0, 0, b.width, b.height)
+                d.draw(c)
+                b
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "largeIcon okunamadı: ${e.message}")
+            null
+        }
+        if (largeIcon != null) {
+            Log.d(TAG, "Kapak bildirim largeIcon'undan alındı (${largeIcon.width}x${largeIcon.height})")
+            return largeIcon
+        }
+
         // Son çare: bildirim küçük ikonu bile kullanılabilir
         n.smallIcon?.let { icon ->
             return runCatching {

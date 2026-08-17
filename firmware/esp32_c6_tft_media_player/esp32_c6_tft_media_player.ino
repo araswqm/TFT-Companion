@@ -49,6 +49,16 @@
 #define PIN_LED    8
 #define NUM_PIXELS 1
 
+// ── Arka ışık (BLK) ─────────────────────────────────────────────────────
+// ST7735 anahtarlık modüllerinde arka ışık genellikle bir transistör
+// üzerinden GPIO'ya bağlıdır ve HIGH yapılmazsa ekran loş kalır (normal
+// parlaklığın küçük bir kısmı). Bu tahtada BLK pini GPIO 15'e gider.
+// Farklı bir modül kullanıyorsanız (veya arka ışık doğrudan 3V3'e bağlıysa)
+// aşağıdaki pini güncelleyin; yanlış/bağlı olmayan bir pinin zararı yoktur.
+#ifndef TFT_BL
+#define TFT_BL 15
+#endif
+
 #define SCREEN_W  128
 #define SCREEN_H  128
 
@@ -459,6 +469,12 @@ void setup() {
   led.begin();
   led.setPixelColor(0, 0);
   led.show();
+
+  // Arka ışığı tam parlaklığa çek. Çoğu anahtarlık modülünde BLK bir GPIO'dan
+  // transistörle sürülür; tanımsız bırakılırsa ekran gözle görülür şekilde
+  // loş kalır (bkz. TFT_BL tanımı yukarıda).
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
 
   Serial.begin(115200);
   delay(300);
