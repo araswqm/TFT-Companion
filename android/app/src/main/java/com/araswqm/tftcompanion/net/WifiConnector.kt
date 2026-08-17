@@ -54,28 +54,44 @@ class WifiConnector(context: Context) {
             return
         }
 
+        // Boş değerlerle builder çağırmak IllegalArgumentException fırlatır;
+        // güvenli varsayılanlara düş (firmware softAP varsayılanları).
+        val safeSsid = ssid.trim().ifEmpty { "ESP32-TFT" }
+        val safePassword = password.trim().ifEmpty { "12345678" }
+
         // Önce AP'nin görünür olduğundan emin olalım; değilse hızlıca bildir
-        if (!isApVisible(ssid)) {
-            Log.d(TAG, "AP '$ssid' yakında yok; ağ isteği yine de deneniyor (tarama gecikmeli)")
+        if (!isApVisible(safeSsid)) {
+            Log.d(TAG, "AP '$safeSsid' yakında yok; ağ isteği yine de deneniyor (tarama gecikmeli)")
         }
 
         disconnect()
         val id = ++requestId
 
-        val specifier = WifiNetworkSpecifier.Builder().apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                setSsid(ssid)
-            } else {
-                // API 29: setSsidPattern ile tam eşleşme
-                setSsidPattern(android.os.PatternMatcher(ssid, android.os.PatternMatcher.PATTERN_LITERAL))
-            }
-            setWpa2Passphrase(password)
-        }.build()
+        // Specifier kurulumu izin/argüman hatasında fırlatabilir (ör. eksik
+        // NEARBY_WIFI_DEVICES -> SecurityException). Ana iş parçacığını asla
+        // çöktürmemeli; hata kullanıcıya gösterilir.
+        val request = try {
+            val specifier = WifiNetworkSpecifier.Builder().apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setSsid(safeSsid)
+                } else {
+                    // API 29: setSsidPattern ile tam eşleşme
+                    setSsidPattern(android.os.PatternMatcher(safeSsid, android.os.PatternMatcher.PATTERN_LITERAL))
+                }
+                if (safePassword.isNotEmpty()) setWpa2Passphrase(safePassword)
+            }.build()
 
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .setNetworkSpecifier(specifier)
-            .build()
+            NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .setNetworkSpecifier(specifier)
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Wi-Fi ağ isteği oluşturulamadı: ${e.message}")
+            mainHandler.post {
+                onUnavailable("ESP32 ağına bağlanılamadı (izin engellenmiş olabilir): ${e.message}")
+            }
+            return
+        }
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -87,7 +103,7 @@ class WifiConnector(context: Context) {
             override fun onUnavailable() {
                 if (id != requestId) return
                 Log.w(TAG, "ESP32 ağına bağlanılamadı (timeout/unavailable)")
-                mainHandler.post { onUnavailable("ESP32 ağı bulunamadı: $ssid. Cihazın açık ve yakında olduğundan emin olun.") }
+                mainHandler.post { onUnavailable("ESP32 ağı bulunamadı: $safeSsid. Cihazın açık ve yakında olduğundan emin olun.") }
             }
 
             override fun onLost(network: Network) {
@@ -97,9 +113,16 @@ class WifiConnector(context: Context) {
             }
         }
 
-        Log.d(TAG, "requestNetwork çağrılıyor: $ssid")
-        cm.requestNetwork(request, callback, mainHandler)
-        activeCallback = callback
+        Log.d(TAG, "requestNetwork çağrılıyor: $safeSsid")
+        runCatching {
+            cm.requestNetwork(request, callback, mainHandler)
+            activeCallback = callback
+        }.onFailure { e ->
+            Log.e(TAG, "requestNetwork başarısız: ${e.message}")
+            mainHandler.post {
+                onUnavailable("ESP32 ağına bağlanılamadı (izin engellenmiş olabilir): ${e.message}")
+            }
+        }
     }
 
     fun disconnect() {

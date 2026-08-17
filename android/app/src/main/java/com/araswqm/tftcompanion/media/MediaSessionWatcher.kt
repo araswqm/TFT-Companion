@@ -14,9 +14,9 @@ import android.util.Log
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
@@ -39,7 +39,12 @@ class MediaSessionWatcher(context: Context) {
         appContext.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // Arka plan işleri asla uygulamayı çöktürmemeli; hatalar yalnızca loglanır.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, e ->
+            Log.w(TAG, "İzleme iş parçacığı hatası (kritik değil): ${e.message}")
+        }
+    )
     private val attached = mutableMapOf<MediaController, ControllerCallback>()
 
     private var sessionsListener: MediaSessionManager.OnActiveSessionsChangedListener? = null
@@ -50,18 +55,27 @@ class MediaSessionWatcher(context: Context) {
     fun start() {
         Log.d(TAG, "start() - medya izleme başlıyor")
         running = true
-        sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener {
-            Log.d(TAG, "Aktif oturum listesi değişti, yeniden değerlendiriliyor")
-            if (running) refresh()
+        // Dinleyici kaydı başarısız olursa çökme; hata loglanır ve refresh yine denenir.
+        runCatching {
+            sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener {
+                Log.d(TAG, "Aktif oturum listesi değişti, yeniden değerlendiriliyor")
+                if (running) refresh()
+            }
+            msm.addOnActiveSessionsChangedListener(sessionsListener!!, null)
+        }.onFailure { e ->
+            Log.e(TAG, "Oturum dinleyicisi kaydedilemedi: ${e.message}")
         }
-        msm.addOnActiveSessionsChangedListener(sessionsListener!!, null)
-        refresh()
+        runCatching { refresh() }.onFailure { e ->
+            Log.w(TAG, "İlk tarama başarısız: ${e.message}")
+        }
     }
 
     fun stop() {
         Log.d(TAG, "stop() - medya izleme durduruluyor")
         running = false
-        sessionsListener?.let { msm.removeOnActiveSessionsChangedListener(it) }
+        runCatching {
+            sessionsListener?.let { msm.removeOnActiveSessionsChangedListener(it) }
+        }
         sessionsListener = null
         detachAll()
     }
@@ -84,13 +98,17 @@ class MediaSessionWatcher(context: Context) {
 
     private fun attach(controller: MediaController) {
         if (attached.containsKey(controller)) return
-        val callback = ControllerCallback(controller) { md, state, changedPlayback ->
-            emit(controller, md, state, changedPlayback)
+        runCatching {
+            val callback = ControllerCallback(controller) { md, state, changedPlayback ->
+                emit(controller, md, state, changedPlayback)
+            }
+            controller.registerCallback(callback, mainHandler)
+            attached[controller] = callback
+            // Hemen mevcut metadata ile ilk güncellemeyi yap
+            emit(controller, controller.metadata, controller.playbackState?.state, false)
+        }.onFailure { e ->
+            Log.w(TAG, "Oturuma bağlanılamadı: ${controller.packageName} ${e.message}")
         }
-        controller.registerCallback(callback, mainHandler)
-        attached[controller] = callback
-        // Hemen mevcut metadata ile ilk güncellemeyi yap
-        emit(controller, controller.metadata, controller.playbackState?.state, false)
     }
 
     private fun detachAll() {
@@ -132,10 +150,15 @@ class MediaSessionWatcher(context: Context) {
     // --- Albüm kapağı çözümleme ---
 
     private fun resolveAlbumArt(md: MediaMetadata): Bitmap? {
-        // 1) Doğrudan Bitmap (bazı uygulamalar ekler)
-        md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { b ->
-            Log.d(TAG, "Albüm kapağı METADATA_KEY_ALBUM_ART Bitmap'inden alındı (${b.width}x${b.height})")
-            return b
+        // 1) Doğrudan Bitmap (bazı uygulamalar ekler). getBitmap bozuk veride
+        //    IOException fırlatabilir -> yakalanır, URI yoluna düşülür.
+        runCatching {
+            md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { b ->
+                Log.d(TAG, "Albüm kapağı METADATA_KEY_ALBUM_ART Bitmap'inden alındı (${b.width}x${b.height})")
+                return b
+            }
+        }.onFailure { e ->
+            Log.w(TAG, "Albüm kapağı bitmap olarak okunamadı: ${e.message}")
         }
         // 2) URI üzerinden
         val uriStr = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)

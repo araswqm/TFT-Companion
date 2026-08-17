@@ -26,22 +26,28 @@ class MediaNotificationListener : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         super.onNotificationPosted(sbn)
-        if (!isMediaNotification(sbn.notification)) return
+        // Binder iş parçacığında oluşan bir hata tüm uygulamayı çöktürebilir;
+        // medya bildirimi işleme her zaman zararsız olmalı.
+        try {
+            if (!isMediaNotification(sbn.notification)) return
 
-        val md = sbn.notification.extras.getBundle(EXTRA_MEDIA_METADATA) ?: return
-        val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
-            ?: sbn.notification.extras.getString(Notification.EXTRA_TITLE)
-        if (title == null) return
+            val md = sbn.notification.extras.getBundle(EXTRA_MEDIA_METADATA) ?: return
+            val title = md.getString(MediaMetadata.METADATA_KEY_TITLE)
+                ?: sbn.notification.extras.getString(Notification.EXTRA_TITLE)
+            if (title == null) return
 
-        val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM)
-            ?: sbn.notification.extras.getString(Notification.EXTRA_TEXT) ?: ""
-        val art = resolveArt(md, sbn.notification)
+            val artist = md.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                ?: md.getString(MediaMetadata.METADATA_KEY_ALBUM)
+                ?: sbn.notification.extras.getString(Notification.EXTRA_TEXT) ?: ""
+            val art = resolveArt(md, sbn.notification)
 
-        Log.d(TAG, "Bildirim metadata: '$title' - $artist (${sbn.packageName})")
-        NowPlayingBus.emit(
-            NowPlaying(title = title, artist = artist, albumArt = art, source = sbn.packageName)
-        )
+            Log.d(TAG, "Bildirim metadata: '$title' - $artist (${sbn.packageName})")
+            NowPlayingBus.emit(
+                NowPlaying(title = title, artist = artist, albumArt = art, source = sbn.packageName)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Bildirim işlenirken hata (kritik değil): ${e.message}")
+        }
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -56,8 +62,13 @@ class MediaNotificationListener : NotificationListenerService() {
     }
 
     private fun resolveArt(md: Bundle, n: Notification): Bitmap? {
-        md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
-        md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_DISPLAY_ICON)?.let { return it }
+        // getParcelable yanlış tipte veride ClassCastException fırlatabilir.
+        runCatching {
+            md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_ALBUM_ART)?.let { return it }
+            md.getParcelable<Bitmap>(MediaMetadata.METADATA_KEY_DISPLAY_ICON)?.let { return it }
+        }.onFailure { e ->
+            Log.w(TAG, "Kapak Bitmap olarak okunamadı: ${e.message}")
+        }
         val uri = md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
             ?: md.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
         if (uri != null) {

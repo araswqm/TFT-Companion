@@ -161,9 +161,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _ui.update { it.copy(working = true, progressLabel = "Önizleme oluşturuluyor…") }
             try {
                 val preview = preparer.previewFrame(uri, contentType)
-                val maxBytes = queryMaxBytes()
+                // Önizlemede AĞA BAĞLANMA: queryMaxBytes() ESP32'ye bağlantı ister ve
+                // izin duvarına takılıp hata/çökme üretebilir. Hazırlık varsayılan
+                // boyutla yapılır; gerçek boş alan gönderim anında sorgulanır.
                 val prepared = withContext(Dispatchers.Default) {
-                    preparer.prepare(uri, contentType, maxBytes) { done, _ ->
+                    preparer.prepare(uri, contentType, DEFAULT_MAX_BYTES) { done, _ ->
                         _ui.update {
                             it.copy(
                                 working = true,
@@ -197,8 +199,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _ui.update { it.copy(working = true, progressLabel = "ESP32'ye gönderiliyor…") }
             try {
-                uploadPrepared(draft.prepared)
-                showMessage("Gönderildi: ${draft.prepared.fileName}")
+                // Gerçek boş alanı öğren; önizleme hazırlığı varsayılan boyutla
+                // yapıldıysa ve dosya büyükse burada yeniden boyutlandır.
+                val maxBytes = queryMaxBytes()
+                val prepared = if (draft.prepared.bytes.size.toLong() > maxBytes) {
+                    _ui.update { it.copy(progressLabel = "Boyut uyarlanıyor…") }
+                    withContext(Dispatchers.Default) {
+                        preparer.prepare(draft.uri, draft.contentType, maxBytes) { done, _ ->
+                            _ui.update {
+                                it.copy(progressLabel = "Boyut uyarlanıyor… $done kare")
+                            }
+                        }
+                    }
+                } else {
+                    draft.prepared
+                }
+                uploadPrepared(prepared)
+                showMessage("Gönderildi: ${prepared.fileName}")
             } catch (e: Exception) {
                 showError("Gönderim başarısız: ${e.message}")
             } finally {
@@ -245,6 +262,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 },
                 onUnavailable = { msg ->
                     Log.w(TAG, "Bağlantı başarısız: $msg")
+                    showError(msg)
                     _ui.update { it.copy(connState = ConnState.ERROR) }
                     if (cont.isActive) cont.resumeWith(Result.success<Esp32Api?>(null))
                 },

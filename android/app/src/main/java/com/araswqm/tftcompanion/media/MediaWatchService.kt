@@ -33,9 +33,21 @@ class MediaWatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
-        startForegroundCompat()
-        startWatching()
+        // Ön plan hizmeti kurulumu başarısız olursa hizmet hemen durdurulur,
+        // aksi halde ForegroundServiceDidNotStartInTimeException ile uygulama çöker.
+        try {
+            createChannel()
+            startForegroundCompat()
+        } catch (e: Exception) {
+            Log.e(TAG, "Ön plan hizmeti başlatılamadı: ${e.message}")
+            stopSelf()
+            return
+        }
+        try {
+            startWatching()
+        } catch (e: Exception) {
+            Log.e(TAG, "Medya izleme başlatılamadı: ${e.message}")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
