@@ -21,6 +21,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import pl.droidsonroids.gif.GifDrawable
 
+/** İlerleme geri çağrısı: (tamamlanan, toplam) — toplam video/GIF'te -1 olabilir. */
+typealias Progress = (done: Int, total: Int) -> Unit
+
 /**
  * Her tür medyayı ESP32 128x128 ST7735 ekranına uygun formata dönüştürür.
  *
@@ -40,9 +43,6 @@ class MediaPreparer(private val context: Context) {
         private const val MAX_FRAMES = 120      // 20 FPS => ~6 saniyelik döngü
         private const val JPEG_MIN_QUALITY = 25
         private const val JPEG_START_QUALITY = 90
-
-        /** İlerleme geri çağrısı: (tamamlanan, toplam) — toplam video/GIF'te -1 olabilir. */
-        typealias Progress = (done: Int, total: Int) -> Unit
     }
 
     data class PreparedFile(
@@ -143,11 +143,13 @@ class MediaPreparer(private val context: Context) {
     private fun prepareGif(uri: Uri, maxBytes: Long): PreparedFile {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("GIF okunamadı")
-
-        return GifDrawable(bytes).use { gif ->
+        val gif = GifDrawable(bytes)
+        return try {
             val frames = renderGifFrames(gif)
             Log.d(TAG, "GIF ${gif.numberOfFrames} kare -> MJPEG ${frames.size} kare")
             buildMjpeg(frames, maxBytes)
+        } finally {
+            gif.recycle()
         }
     }
 
