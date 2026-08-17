@@ -59,7 +59,12 @@ class MediaPreparer(private val context: Context) {
         private const val SPIN_FRAME_COUNT = 24        // başlangıç: 24 kare
         private const val SPIN_MIN_FRAME_COUNT = 6     // en az 6 kare (görsel kalite)
         private const val SPIN_REVOLUTION_MS = 2400    // bir tam tur = 2.4 s
-        private const val SPIN_START_COLORS = 256
+        // AnimatedGIF'ın GIFParseInfo'su dosyayı 255 baytlık ilk okuma penceresiyle
+        // işler; yerel renk tablosu (LCT) bu pencereye sığmalı. LCT = 3 * renk sayısı
+        // bayt + koddan sonra ucCodeStart pencerenin içinde kalmalı => en fazla ~72
+        // renk, güvenli sınır 64 (2^6). 64+ renkte LCT pencerenin dışına taşar,
+        // palet/ucCodeStart çöp okunur ve GIF "sadece üst kısım + glitchli" çözülür.
+        private const val SPIN_START_COLORS = 64
         private const val SPIN_MIN_COLORS = 64         // palet bu kadar küçülürse dur
     }
 
@@ -147,9 +152,9 @@ class MediaPreparer(private val context: Context) {
 
     /**
      * Albüm kapağını overlay arkasında CCW döndürüp GIF'e paketler. Boyut
-     * LittleFS sınırını aşarsa önce kare sayısı (24 -> 12 -> 6), sonra palet
-     * (256 -> 128 -> 64) küçültülerek yeniden dener; hiçbiri sığmazsa en küçük
-     * aday yine de gönderilir (ESP32 dosyayı reddedebilir).
+     * LittleFS sınırını aşarsa kare sayısı (24 -> 12 -> 6) küçültülerek yeniden
+     * dener. Palet sabittir: AnimatedGIF'ın 255-bayt okuma penceresi 64 rengin
+     * üzerinde LCT'i okuyamaz (yukarıdaki SPIN_START_COLORS yorumuna bakın).
      */
     private fun prepareSpinGif(src: Bitmap, overlay: Bitmap, maxBytes: Long): PreparedFile {
         val art = centerCrop(src, SCREEN_SIZE)
@@ -158,7 +163,7 @@ class MediaPreparer(private val context: Context) {
             (SPIN_FRAME_COUNT / 2).coerceAtLeast(SPIN_MIN_FRAME_COUNT),
             SPIN_MIN_FRAME_COUNT,
         )
-        val colorSets = intArrayOf(SPIN_START_COLORS, 128, SPIN_MIN_COLORS)
+        val colorSets = intArrayOf(SPIN_START_COLORS)
 
         var best: ByteArray? = null
         for (fc in frameCounts) {
@@ -232,6 +237,13 @@ class MediaPreparer(private val context: Context) {
     private fun prepareGif(uri: Uri, maxBytes: Long): PreparedFile {
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("GIF okunamadı")
+        // Kullanıcı GIF seçtiyse GIF olarak KALSIN — MJPEG'e çevirme. ESP32 zaten
+        // AnimatedGIF ile GIF oynatıyor (startGif). Boyut LittleFS'e sığıyorsa
+        // orijinal GIF olduğu gibi gönderilir; sığmıyorsa MJPEG'e düşülür.
+        if (bytes.size <= maxBytes) {
+            Log.d(TAG, "GIF passthrough: ${bytes.size} bayt (sınır $maxBytes)")
+            return PreparedFile(bytes, "cover.gif")
+        }
         val gif = GifDrawable(bytes)
         return try {
             val frames = renderGifFrames(gif)

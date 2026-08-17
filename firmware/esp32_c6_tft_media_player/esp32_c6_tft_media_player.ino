@@ -497,10 +497,13 @@ void setup() {
 
   gif.begin(GIF_PALETTE_RGB565_BE);
 
-  WiFi.softAP(ssid, password);
+  // ÖNEMLİ: softAPConfig softAP'tan ÖNCE çağrılmalı. Aksi halde AP açıldığında
+  // IP 192.168.4.1 yerine varsayılan (192.168.4.1 dışı) atanır ve tarayıcı
+  // http://192.168.4.1 sayfasına erişemez.
   WiFi.softAPConfig(IPAddress(192,168,4,1),
                     IPAddress(192,168,4,1),
                     IPAddress(255,255,255,0));
+  WiFi.softAP(ssid, password);
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/status", HTTP_GET, handleStatus);
