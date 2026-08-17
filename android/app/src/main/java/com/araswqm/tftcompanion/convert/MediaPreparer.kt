@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -154,12 +153,12 @@ class MediaPreparer(private val context: Context) {
     }
 
     private fun renderGifFrames(gif: GifDrawable): List<Bitmap> {
-        gif.start()
+        // start() çağrılmaz: animasyon döngüsü seekToFrame ile yarışmasın diye
+        // kareler manuel (seekToFrame + draw) çizilir.
         val w = gif.intrinsicWidth
         val h = gif.intrinsicHeight
         if (w <= 0 || h <= 0) throw IllegalStateException("GIF boyutu geçersiz")
         val canvas = Canvas()
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
         val frames = mutableListOf<Bitmap>()
         var rendered = 0
 
@@ -167,13 +166,15 @@ class MediaPreparer(private val context: Context) {
             if (rendered >= MAX_FRAMES) break
             gif.seekToFrame(i)
             // Kare süresine göre kopya sayısı (ESP32 sabit 50ms/FPS kare hızında oynatır)
-            val duration = max(1L, gif.getFrameDuration(i))
-            val copies = min(MAX_FRAMES - rendered, ((duration + 49) / 50).toInt().coerceAtLeast(1))
+            val durationMs = max(1, gif.getFrameDuration(i)) // int ms
+            val copies = min(MAX_FRAMES - rendered, ((durationMs + 49) / 50).coerceAtLeast(1))
             repeat(copies) {
                 val frame = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 canvas.setBitmap(frame)
                 canvas.drawColor(Color.WHITE) // şeffaf GIF kareleri için zemin
-                canvas.drawBitmap(gif, 0f, 0f, paint)
+                // GifDrawable bir Drawable'dır; Canvas'a draw() ile çizilir (Bitmap değil).
+                gif.setBounds(0, 0, w, h)
+                gif.draw(canvas)
                 frames.add(centerCrop(frame, SCREEN_SIZE))
                 if (frame.width != SCREEN_SIZE) frame.recycle()
                 rendered++
