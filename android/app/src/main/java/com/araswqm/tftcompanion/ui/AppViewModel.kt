@@ -509,7 +509,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             _ui.update { it.copy(working = false, progressLabel = null) }
             if (ok) {
                 // ESP32 kendini kapattı; eski api/network artık geçersiz.
-                api = null
+                // Bu fonksiyonun local 'val api' değişkeni sınıf alanını gölgeler;
+                // sınıf alanını sıfırlamak için 'this.' şart.
+                this.api = null
                 boundNetwork = null
                 _ui.update { it.copy(connState = ConnState.IDLE) }
                 showMessage("Şarj modu etkin. ESP32 kapalı — şarj bittiğinde switch'i kapatıp açın.")

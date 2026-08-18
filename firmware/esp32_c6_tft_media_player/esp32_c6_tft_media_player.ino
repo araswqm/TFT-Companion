@@ -541,7 +541,7 @@ void enterChargingMode() {
 
   // Ekranı uyut, LED'i söndür
   tft.fillScreen(TFT_BLACK);
-  tft.sleep();
+  tft.writecommand(TFT_SLPIN);   // ST7735 uyku komutu (0x10) — TFT_eSPI'da sleep() yok
   led.setPixelColor(0, 0);
   led.show();
 
