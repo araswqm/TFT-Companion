@@ -16,10 +16,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +56,7 @@ fun MainScreen(
     onSaveEsp32: (String, String, String, Int) -> Unit,
     onOpenNls: () -> Unit,
     onConnect: () -> Unit,
+    onEnterChargeMode: () -> Unit,
     isNlsGranted: Boolean,
 ) {
     Column(
@@ -90,6 +93,12 @@ fun MainScreen(
         }
 
         Esp32SettingsCard(state, onSaveEsp32)
+
+        ChargeModeCard(
+            enabled = state.connState == AppViewModel.ConnState.CONNECTED,
+            working = state.working,
+            onEnterChargeMode = onEnterChargeMode,
+        )
     }
 }
 
@@ -312,5 +321,57 @@ private fun Esp32SettingsCard(
                 Text("Kaydet")
             }
         }
+    }
+}
+
+@Composable
+private fun ChargeModeCard(
+    enabled: Boolean,
+    working: Boolean,
+    onEnterChargeMode: () -> Unit,
+) {
+    var confirmOpen by remember { mutableStateOf(false) }
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Güç", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Şarj modu: ESP32'nin tüm fonksiyonlarını kapatır (ekran, Wi-Fi). " +
+                    "Cihaz, güç kesilip geri gelene kadar (switch'i kapatıp açana kadar) " +
+                    "kapalı kalır. Şarj etmeden önce buradan tetikleyin.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = { confirmOpen = true },
+                enabled = enabled && !working,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Şarj Moduna Geç")
+            }
+        }
+    }
+    if (confirmOpen) {
+        AlertDialog(
+            onDismissRequest = { confirmOpen = false },
+            title = { Text("Şarj moduna geçilsin mi?") },
+            text = {
+                Text(
+                    "ESP32 kapatılacak ve şarj bitene kadar kapalı kalacak. " +
+                        "Şarj işlemi bittikten sonra anahtarlığın switch'ini kapatıp " +
+                        "tekrar açın.",
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmOpen = false
+                        onEnterChargeMode()
+                    },
+                ) { Text("Evet, kapat") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmOpen = false }) { Text("Vazgeç") }
+            },
+        )
     }
 }

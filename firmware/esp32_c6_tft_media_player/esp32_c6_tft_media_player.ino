@@ -36,6 +36,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 #include <WiFi.h>
 #include <WebServer.h>
+#include <esp_sleep.h>   // esp_deep_sleep_start — şarj modu derin uykusu
 #include <SPI.h>
 #include <TFT_eSPI.h>
 // NOT: arduino-esp32 3.3.7'deki LittleFS.h sarmalayıcısı bozuk — idf-6.x API'sini
@@ -57,12 +58,12 @@
 #define PIN_LED    8
 #define NUM_PIXELS 1
 
-// ── Arka ışık (BLK) ─────────────────────────────────────────────────────
+// ── GPIO15 (mavi LED) ────────────────────────────────────────────────────
 // ST7735 anahtarlık modüllerinde arka ışık genellikle bir transistör
-// üzerinden GPIO'ya bağlıdır ve HIGH yapılmazsa ekran loş kalır (normal
-// parlaklığın küçük bir kısmı). Bu tahtada BLK pini GPIO 15'e gider.
-// Farklı bir modül kullanıyorsanız (veya arka ışık doğrudan 3V3'e bağlıysa)
-// aşağıdaki pini güncelleyin; yanlış/bağlı olmayan bir pinin zararı yoktur.
+// üzerinden GPIO'ya bağlıdır ve HIGH yapılmazsa ekran loş kalır. Ancak bu
+// modülde GPIO15 arka ışığa değil, ayrı bir mavi LED'e bağlı; arka ışık
+// doğrudan 3V3'ten besleniyor. HIGH yazmak o LED'i sürekli yakar, o yüzden
+// setup()'ta pin INPUT yapılarak söndürülüyor.
 #ifndef TFT_BL
 #define TFT_BL 15
 #endif
@@ -78,9 +79,15 @@
 TFT_eSPI          tft;
 Adafruit_NeoPixel led(NUM_PIXELS, PIN_LED, NEO_GRB + NEO_KHZ800);
 
-const char* ssid     = "ESP32-TFT";
+const char* ssid     = "VinylTag";
 const char* password = "12345678";
 WebServer   server(80);
+
+// ── ŞARJ MODU bayrağı (RTC bellek) ───────────────────────────────────────
+// RTC_DATA_ATTR değerleri derin uyku ve soft reset boyunca korunur, yalnızca
+// güç tamamen kesilince (switch kapatılıp açılınca) temizlenir. Böylece şarj
+// modu tam istenen anlamı taşır: "güç kesilip geri gelene kadar kapalı kal".
+RTC_DATA_ATTR bool chargingMode = false;
 
 enum MediaType { MEDIA_NONE, MEDIA_JPEG, MEDIA_GIF, MEDIA_MJPEG };
 MediaType currentMedia = MEDIA_NONE;
@@ -515,18 +522,64 @@ void handleUpload() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  ŞARJ MODU
+// ═══════════════════════════════════════════════════════════════════════
+// Kullanıcı şarja takmadan ÖNCE uygulamadan bu modu tetikler: tüm fonksiyonlar
+// kapanır, cihaz derin uykuya girer. chargingMode bayrağı RTC'de saklandığından
+// reset/watchdog sonrası da kapalı kalır; yalnızca güç kesilip geri gelince
+// (switch kapatılıp açılınca) sıfırlanır ve cihaz normal açılır.
+void enterChargingMode() {
+  Serial.println("SARJ MODU — tum fonksiyonlar kapatiliyor");
+  chargingMode = true;
+
+  // Oynatılan medyayı durdur
+  freeMedia();
+
+  // Web sunucusu + Wi-Fi erişim noktasını kapat (true = radyoyu da kapat)
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_OFF);
+
+  // Ekranı uyut, LED'i söndür
+  tft.fillScreen(TFT_BLACK);
+  tft.sleep();
+  led.setPixelColor(0, 0);
+  led.show();
+
+  // Derin uyku — hiçbir uyandırma kaynağı tanımlanmadı, yalnızca reset (güç
+  // kesilip gelmesi) uyandırır. setup() baştan çalışır, chargingMode hâlâ true
+  // olduğundan (güç kesilmedi) tekrar kapanır ve böylece kapalı kalır.
+  esp_deep_sleep_start();
+  // Buraya asla ulaşılamaz.
+}
+
+void handleCharge() {
+  // Cevabı ÖNCE gönder, TCP tamponlarının boşalması için kısa bekle, sonra kapat.
+  // Bekleme olmazsa uygulama isteği "yanıtsız" sayabilir.
+  server.send(200, "text/plain", "OK - sarj modu etkin");
+  delay(500);
+  enterChargingMode();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  SETUP
 // ═══════════════════════════════════════════════════════════════════════
 void setup() {
+  // Şarj modu bayrağı RTC'de saklı: güç kesilmediyse (switch kapatılıp açılmadıysa)
+  // reset/watchdog sonrası da kapalı kalmalı. Periferal başlatmadan doğrudan derin
+  // uykuya geç — böylece ekran/LED/WiFi bir an bile açılıp şarjda akım çekmez.
+  if (chargingMode) {
+    WiFi.mode(WIFI_OFF);
+    esp_deep_sleep_start();
+  }
+
   led.begin();
   led.setPixelColor(0, 0);
   led.show();
 
-  // Arka ışığı tam parlaklığa çek. Çoğu anahtarlık modülünde BLK bir GPIO'dan
-  // transistörle sürülür; tanımsız bırakılırsa ekran gözle görülür şekilde
-  // loş kalır (bkz. TFT_BL tanımı yukarıda).
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
+  // GPIO15 bu modülde arka ışık değil, ayrı bir mavi LED'e bağlı. HIGH yazınca
+  // o LED sürekli mavi yanıyordu; arka ışık zaten 3V3'ten beslendiği için pini
+  // INPUT yapıp LED'i söndürüyoruz (bkz. TFT_BL tanımı yukarıda).
+  pinMode(TFT_BL, INPUT);
 
   Serial.begin(115200);
   delay(300);
@@ -569,11 +622,13 @@ void setup() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/upload", HTTP_POST, []{ server.send(200); }, handleUpload);
+  server.on("/charge", HTTP_ANY, handleCharge);
   server.begin();
 
   tft.fillScreen(TFT_BLACK);
   tft.setCursor(4, 4);
-  tft.println("WiFi: ESP32-TFT");
+  tft.print("WiFi: ");
+  tft.println(ssid);
   tft.println("Sifre: 12345678");
   tft.println("IP: 192.168.4.1");
   tft.println("Port: 80");

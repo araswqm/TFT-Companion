@@ -56,7 +56,7 @@ class WifiConnector(context: Context) {
 
         // Boş değerlerle builder çağırmak IllegalArgumentException fırlatır;
         // güvenli varsayılanlara düş (firmware softAP varsayılanları).
-        val safeSsid = ssid.trim().ifEmpty { "ESP32-TFT" }
+        val safeSsid = ssid.trim().ifEmpty { "VinylTag" }
         val safePassword = password.trim().ifEmpty { "12345678" }
 
         // Kullanıcı ESP32 ağına Ayarlar üzerinden elle bağlandıysa

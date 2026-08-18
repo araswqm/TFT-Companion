@@ -442,6 +442,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ------------------------------------------------------------ Şarj modu
+
+    /**
+     * ESP32'yi şarj moduna al: tüm fonksiyonlar kapanır, cihaz güç kesilip
+     * gelene kadar (switch) derin uykuda kalır. ESP32 cevabı gönderip kendini
+     * kapattığı için başarılı yanıt sonrası bağlantı durumu sıfırlanır — ağ
+     * düşer, sonraki connect() sıfırdan bağlanır.
+     */
+    fun enterChargingMode() {
+        viewModelScope.launch {
+            val api = ensureApi() ?: run {
+                showError("ESP32'ye bağlanılamadı — şarj modu tetiklenemedi")
+                return@launch
+            }
+            _ui.update { it.copy(working = true, progressLabel = "ESP32 kapatılıyor…") }
+            val ok = api.enterChargingMode(settingsState.value.baseUrl)
+            _ui.update { it.copy(working = false, progressLabel = null) }
+            if (ok) {
+                // ESP32 kendini kapattı; eski api/network artık geçersiz.
+                api = null
+                boundNetwork = null
+                _ui.update { it.copy(connState = ConnState.IDLE) }
+                showMessage("Şarj modu etkin. ESP32 kapalı — şarj bittiğinde switch'i kapatıp açın.")
+            } else {
+                showError("Şarj modu isteği yanıtsız kaldı. ESP32 açıksa tekrar deneyin.")
+            }
+        }
+    }
+
     fun startWatching() {
         startWatchService(getApplication())
     }

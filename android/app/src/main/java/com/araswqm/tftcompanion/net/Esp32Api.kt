@@ -100,4 +100,23 @@ class Esp32Api(private val network: Network) {
             client.newCall(req).execute().use { it.isSuccessful }
         }.getOrDefault(false)
     }
+
+    /**
+     * POST /charge — ESP32'yi şarj moduna alır: cihaz tüm fonksiyonları kapatıp
+     * derin uykuya girer ve güç kesilip gelene kadar (switch) kapalı kalır.
+     * ESP32 cevabı gönderip kendini kapattığı için okuma hemen biter; cevap
+     * gelmeden ağ düşerse false döner.
+     */
+    suspend fun enterChargingMode(baseUrl: String): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/charge")
+                .post(ByteArray(0).toRequestBody(null))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                Log.d(TAG, "POST /charge HTTP ${resp.code}")
+                resp.isSuccessful
+            }
+        }.getOrDefault(false)
+    }
 }
