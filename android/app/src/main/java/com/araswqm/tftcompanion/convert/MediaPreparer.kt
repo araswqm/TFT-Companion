@@ -54,17 +54,17 @@ class MediaPreparer(private val context: Context) {
         private const val JPEG_START_QUALITY = 90
 
         // Otomatik mod plak animasyonu: kapak sabit vinyl_overlay'in arkasında
-        // saat yönünün tersine (negatif açı) döner. Kare sayısı LittleFS boyutuna
-        // uyması için azaltılabilir; dönüş hızı sabit kalsın diye tur süresi
-        // korunur (SPIN_REVOLUTION_MS / frameCount => kare başına süre).
-        private const val SPIN_FRAME_COUNT = 24        // başlangıç: 24 kare
-        private const val SPIN_MIN_FRAME_COUNT = 6     // en az 6 kare (görsel kalite)
-        private const val SPIN_REVOLUTION_MS = 2400    // bir tam tur = 2.4 s
-        // AnimatedGIF'ın GIFParseInfo'su dosyayı 255 baytlık ilk okuma penceresiyle
-        // işler; yerel renk tablosu (LCT) bu pencereye sığmalı. LCT = 3 * renk sayısı
-        // bayt + koddan sonra ucCodeStart pencerenin içinde kalmalı => en fazla ~72
-        // renk, güvenli sınır 64 (2^6). 64+ renkte LCT pencerenin dışına taşar,
-        // palet/ucCodeStart çöp okunur ve GIF "sadece üst kısım + glitchli" çözülür.
+        // saat yönünün tersine (negatif açı) döner. Medya MJPEG olarak paketlenir
+        // (GIF yerine — AnimatedGIF kare başına farklı yerel palete sahip GIF'leri
+        // düzgün gösteremiyor). Kare sayısı ESP32'nin ÖLÇÜLEN gerçek MJPEG oynatma
+        // hızına göre ayarlandı: ~270ms/kare (firmware hedefi MJPEG_FRAME_MS=50'nin
+        // çok üstünde), 9 kare => tur ≈ 2.4 saniye.
+        private const val SPIN_FRAME_COUNT = 9         // 9 kare — ~270ms/kare ölçümüne göre, tur ≈2.4sn
+        private const val SPIN_MIN_FRAME_COUNT = 5     // boyut daralması için alt sınır (5 kare)
+        private const val SPIN_REVOLUTION_MS = 2400    // bir tam tur hedefi = 2.4 s
+        // Aşağıdaki GIF sabitleri yalnızca SAKLANAN (şu an kullanılmayan)
+        // prepareSpinGif() için geçerlidir: AnimatedGIF'ın 255-bayt okuma penceresi
+        // LCT'yi 64 renkle sınırlar. MJPEG yolunda kullanılmaz.
         private const val SPIN_START_COLORS = 64
         private const val SPIN_MIN_COLORS = 64         // palet bu kadar küçülürse dur
 
@@ -77,7 +77,7 @@ class MediaPreparer(private val context: Context) {
 
     data class PreparedFile(
         val bytes: ByteArray,
-        val fileName: String,        // ".jpg" | ".mjpg" | ".gif"
+        val fileName: String,        // ".jpg" | ".mjpg" | ".mjpeg" | ".gif"
         val frameMs: Int = 0,        // MJPEG için ESP32 frame aralığı (50ms)
     ) {
         val sizeKb: Int get() = bytes.size / 1024
@@ -139,8 +139,7 @@ class MediaPreparer(private val context: Context) {
 
     /**
      * Otomatik mod: albüm kapağını vinyl_overlay arkasında dönen animasyonlu
-     * GIF'e çevirir (plak etkisi). Overlay yüklenemezse eski davranışa (tek
-     * kare JPEG) düşer.
+     * MJPEG'e çevirir (plak etkisi). Overlay yüklenemezse tek kare JPEG'e düşer.
      */
     suspend fun prepareBitmap(src: Bitmap, maxBytes: Long): PreparedFile = withContext(Dispatchers.Default) {
         val overlay = vinylOverlay
@@ -152,7 +151,7 @@ class MediaPreparer(private val context: Context) {
             Log.d(TAG, "Albüm kapağı -> JPEG kalite=$quality ${jpeg.size} bayt")
             return@withContext PreparedFile(jpeg, "cover.jpg")
         }
-        prepareSpinGif(src, overlay, maxBytes)
+        prepareSpinMjpeg(src, overlay, maxBytes)
     }
 
     // ---------------------------------------------------- Plak animasyonu
@@ -215,6 +214,52 @@ class MediaPreparer(private val context: Context) {
             frames.add(px.copyOf())
         }
         return frames
+    }
+
+    /**
+     * Albüm kapağını overlay arkasında CCW döndürüp MJPEG olarak paketler
+     * (plak animasyonu). GIF yolunun yerine geçti: AnimatedGIF kare başına
+     * farklı yerel palete sahip GIF'leri düzgün çözemiyor, MJPEG zaten doğru
+     * çalışıyor.
+     *
+     * Kareler [renderSpinFrames] ile üretilir (aynen kullanılır); her kare
+     * IntArray pikselden standart Android JPEG'e (Bitmap.createBitmap +
+     * [encodeJpeg]) çevrilir ve SOI(FFD8)..EOI(FFD9) olarak art arda
+     * birleştirilir — araya hiçbir ayraç girmez, firmware'deki
+     * mjpegFindNextFrame() bu SOI/EOI imlerini arayarak kareleri ayırır.
+     * LittleFS sınırına sığdırmak için önce JPEG kalitesi kademeli düşürülür
+     * (fitQuality deseni), o da yetmezse kare sayısı azaltılır.
+     */
+    private fun prepareSpinMjpeg(src: Bitmap, overlay: Bitmap, maxBytes: Long): PreparedFile {
+        val art = centerCrop(src, SCREEN_SIZE)
+        // Önce tam kare sayısı; sığmazsa kalite düşürülür, o da yetmezse kare sayısı azaltılır.
+        val frameCounts = intArrayOf(
+            SPIN_FRAME_COUNT,
+            (SPIN_FRAME_COUNT / 2).coerceAtLeast(SPIN_MIN_FRAME_COUNT),
+            SPIN_MIN_FRAME_COUNT,
+        )
+
+        var best: PreparedFile? = null
+        for (fc in frameCounts.distinct()) {
+            val frames = renderSpinFrames(art, overlay, fc).map {
+                Bitmap.createBitmap(it, SCREEN_SIZE, SCREEN_SIZE, Bitmap.Config.ARGB_8888)
+            }
+            var quality = JPEG_START_QUALITY
+            var out = packFrames(frames, quality)
+            while (out.size > maxBytes && quality > JPEG_MIN_QUALITY) {
+                quality -= 10
+                out = packFrames(frames, quality)
+            }
+            val prepared = PreparedFile(out, "cover_spin.mjpeg", frameMs = 50)
+            if (out.size <= maxBytes) {
+                Log.d(TAG, "Plak MJPEG hazır: $fc kare, kalite=$quality, ${out.size} bayt")
+                return prepared
+            }
+            best = prepared
+        }
+        val smallest = best ?: throw IllegalStateException("MJPEG üretilemedi")
+        Log.w(TAG, "Plak MJPEG ${smallest.sizeKb} KB ile sınıra sığmıyor; en küçük aday gönderiliyor")
+        return smallest
     }
 
     // ---------------------------------------------------------------- Görüntü
