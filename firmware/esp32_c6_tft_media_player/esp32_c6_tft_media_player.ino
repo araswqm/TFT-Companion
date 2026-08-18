@@ -229,7 +229,7 @@ void drawJpeg(const char* filename) {
   if (!jbuf) { Serial.println("JPEG heap hatasi"); fclose(f); return; }
   size_t got = fread(jbuf, 1, (size_t)sz, f);
   fclose(f);
-  if (got != (size_t)sz || !JpegDec.decodeJpg(jbuf, (uint32_t)sz)) {
+  if (got != (size_t)sz || !JpegDec.decodeArray(jbuf, (uint32_t)sz)) {
     free(jbuf);
     Serial.println("JPEG decode hatasi");
     return;
