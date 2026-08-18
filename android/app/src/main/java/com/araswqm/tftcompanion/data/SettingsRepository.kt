@@ -20,6 +20,7 @@ private object Keys {
     val IP = stringPreferencesKey("esp32_ip")
     val PORT = stringPreferencesKey("esp32_port")
     val DARK_THEME = booleanPreferencesKey("dark_theme")
+    val SPIN_ENABLED = booleanPreferencesKey("spin_enabled")
 }
 
 class SettingsRepository(private val context: Context) {
@@ -32,6 +33,7 @@ class SettingsRepository(private val context: Context) {
             ip = prefs[Keys.IP] ?: AppSettings().ip,
             port = prefs[Keys.PORT]?.toIntOrNull() ?: AppSettings().port,
             darkTheme = prefs[Keys.DARK_THEME] ?: true,
+            spinEnabled = prefs[Keys.SPIN_ENABLED] ?: true,
         )
     }
 
@@ -45,6 +47,8 @@ class SettingsRepository(private val context: Context) {
     }
 
     suspend fun setDarkTheme(dark: Boolean) = update { it[Keys.DARK_THEME] = dark }
+
+    suspend fun setSpinEnabled(enabled: Boolean) = update { it[Keys.SPIN_ENABLED] = enabled }
 
     private fun Preferences.mode(): MediaMode =
         runCatching { MediaMode.valueOf(this[Keys.MODE] ?: MediaMode.AUTO.name) }

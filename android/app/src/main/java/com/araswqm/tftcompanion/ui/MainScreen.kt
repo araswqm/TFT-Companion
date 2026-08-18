@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -49,6 +50,7 @@ fun MainScreen(
     onModeChange: (MediaMode) -> Unit,
     onPickMedia: (android.net.Uri, String?) -> Unit,
     onStartWatching: () -> Unit,
+    onSpinToggle: (Boolean) -> Unit,
     onSaveEsp32: (String, String, String, Int) -> Unit,
     onOpenNls: () -> Unit,
     onConnect: () -> Unit,
@@ -83,7 +85,7 @@ fun MainScreen(
         ConnStatusCard(state, onConnect)
 
         when (state.mode) {
-            MediaMode.AUTO -> AutoModeCard(state, onStartWatching)
+            MediaMode.AUTO -> AutoModeCard(state, onStartWatching, onSpinToggle)
             MediaMode.MANUAL -> ManualModeCard(onPickMedia)
         }
 
@@ -165,7 +167,11 @@ private fun ConnStatusCard(state: AppViewModel.UiState, onConnect: () -> Unit) {
 }
 
 @Composable
-private fun AutoModeCard(state: AppViewModel.UiState, onStartWatching: () -> Unit) {
+private fun AutoModeCard(
+    state: AppViewModel.UiState,
+    onStartWatching: () -> Unit,
+    onSpinToggle: (Boolean) -> Unit,
+) {
     Card {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Şu An Çalan", style = MaterialTheme.typography.titleMedium)
@@ -205,6 +211,21 @@ private fun AutoModeCard(state: AppViewModel.UiState, onStartWatching: () -> Uni
             }
             if (state.progressLabel != null) {
                 Text(state.progressLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+            // Plak animasyonu açıkken dönen kapak + overlay (MJPEG), kapalıyken düz tek kare JPEG
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Plak animasyonu",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = state.settings.spinEnabled,
+                    onCheckedChange = onSpinToggle,
+                )
             }
             OutlinedButton(onClick = onStartWatching) {
                 Text("İzlemeyi başlat / yeniden dene")

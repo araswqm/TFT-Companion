@@ -145,13 +145,27 @@ class MediaPreparer(private val context: Context) {
         val overlay = vinylOverlay
         if (overlay == null) {
             Log.w(TAG, "vinyl_overlay çözülemedi, tek kare JPEG'e düşülüyor")
-            val square = centerCrop(src, SCREEN_SIZE)
-            val quality = fitQuality(square, maxBytes)
-            val jpeg = encodeJpeg(square, quality)
-            Log.d(TAG, "Albüm kapağı -> JPEG kalite=$quality ${jpeg.size} bayt")
-            return@withContext PreparedFile(jpeg, "cover.jpg")
+            return@withContext buildCover(src, maxBytes)
         }
         prepareSpinMjpeg(src, overlay, maxBytes)
+    }
+
+    /**
+     * Otomatik mod: albüm kapağını DÜZ tek kare JPEG olarak hazırlar (plak
+     * animasyonu kapalıyken kullanılır). [prepareBitmap]'teki overlay-fallback
+     * ile aynı yol: center-crop -> fitQuality -> JPEG ("cover.jpg").
+     */
+    suspend fun prepareCover(src: Bitmap, maxBytes: Long): PreparedFile = withContext(Dispatchers.Default) {
+        buildCover(src, maxBytes)
+    }
+
+    /** Tek kare 128x128 JPEG: boyut sınırına göre JPEG kalitesi ayarlanır. */
+    private fun buildCover(src: Bitmap, maxBytes: Long): PreparedFile {
+        val square = centerCrop(src, SCREEN_SIZE)
+        val quality = fitQuality(square, maxBytes)
+        val jpeg = encodeJpeg(square, quality)
+        Log.d(TAG, "Albüm kapağı -> JPEG kalite=$quality ${jpeg.size} bayt")
+        return PreparedFile(jpeg, "cover.jpg")
     }
 
     // ---------------------------------------------------- Plak animasyonu

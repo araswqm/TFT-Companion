@@ -45,6 +45,7 @@ fun AppScreen(viewModel: AppViewModel) {
                     onModeChange = viewModel::setMode,
                     onPickMedia = viewModel::onMediaPicked,
                     onStartWatching = viewModel::startWatching,
+                    onSpinToggle = viewModel::setSpinEnabled,
                     onSaveEsp32 = viewModel::saveEsp32Settings,
                     onOpenNls = viewModel::openNotificationSettings,
                     onConnect = viewModel::connect,

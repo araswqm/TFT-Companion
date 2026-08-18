@@ -186,7 +186,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _ui.update { it.copy(nowPlaying = effective) }
                 delay(AUTO_DEBOUNCE_MS)  // yeni medya gelirse önceki iptal olur
                 if (_ui.value.mode == MediaMode.AUTO) {
-                    handleAutoNowPlaying(effective)
+                    handleAutoNowPlaying(effective, spin = settingsState.value.spinEnabled)
                 }
             }
         }
@@ -194,7 +194,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     // ------------------------------------------------------------ Otomatik
 
-    private suspend fun handleAutoNowPlaying(np: NowPlaying) {
+    private suspend fun handleAutoNowPlaying(np: NowPlaying, spin: Boolean) {
         val art = np.albumArt ?: run {
             Log.d(TAG, "Albüm kapağı yok, atlanıyor")
             return
@@ -205,7 +205,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // ESP32 boş alanını öğren
             val maxBytes = queryMaxBytes()
             val prepared = withContext(Dispatchers.Default) {
-                preparer.prepareBitmap(art, maxBytes)
+                // settings.spinEnabled'e göre: plak animasyonu (MJPEG) ya da düz tek kare kapak
+                if (spin) preparer.prepareBitmap(art, maxBytes)
+                else preparer.prepareCover(art, maxBytes)
             }
             Log.d(TAG, "Otomatik kapak hazır: ${prepared.fileName} (${prepared.sizeKb} KB)")
             uploadPrepared(prepared)
@@ -413,6 +415,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 startWatchService(ctx)
             } else {
                 ctx.stopService(android.content.Intent(ctx, MediaWatchService::class.java))
+            }
+        }
+    }
+
+    /**
+     * "Plak animasyonu" switch'i: ayarı kalıcı yaz ve O AN çalan şarkı varsa
+     * yeni ayarla HEMEN yeniden gönder (şarkı değişmesini bekleme). Yeni spin
+     * değeri parametreyle iletilir — DataStore yazımı ile akış emisyonu
+     * arasındaki yarış, _ui.value.settings'ten okumaya göre daha güvenilirdir.
+     */
+    fun setSpinEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setSpinEnabled(enabled)
+            val np = _ui.value.nowPlaying ?: return@launch
+            if (_ui.value.mode == MediaMode.AUTO) {
+                handleAutoNowPlaying(np, spin = enabled)
             }
         }
     }

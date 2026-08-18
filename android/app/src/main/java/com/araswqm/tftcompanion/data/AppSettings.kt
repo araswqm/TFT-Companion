@@ -8,6 +8,7 @@ data class AppSettings(
     val ip: String = "192.168.4.1",                // ESP32 AP ağ geçidi
     val port: Int = 80,
     val darkTheme: Boolean = true,
+    val spinEnabled: Boolean = true,          // Otomatik modda plak animasyonu mu, düz kapak mı gönderilsin
 ) {
     val baseUrl: String get() = "http://$ip:$port"
 }
