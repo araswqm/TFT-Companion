@@ -19,9 +19,6 @@ import kotlin.math.min
  */
 object GifEncoder {
 
-    private const val MIN_CODE_SIZE = 8        // 256 renge kadar
-    private const val CLEAR_CODE = 1 shl MIN_CODE_SIZE      // 256
-    private const val EOI_CODE = CLEAR_CODE + 1             // 257
     private const val MAX_TABLE = 4096                      // 2^12 (LZW sınırı)
 
     /** Tüm karelere tek bir süre atar (tek-biçimli animasyonlar için). */
@@ -68,9 +65,21 @@ object GifEncoder {
         out.write(0xFF); out.write(0xFF); out.write(0xFF)
 
         val frameSize = width * height
-        for ((i, frame) in frames.withIndex()) {
-            require(frame.size == frameSize) { "Kare boyutu width*height olmalı" }
+        frames.forEach { require(it.size == frameSize) { "Kare boyutu width*height olmalı" } }
 
+        // --- Tüm karelerin paletlerini önce hesapla ---
+        // GIF89a'da LZW minimum kod boyutu dosya genelinde tutarlı olmalı;
+        // kare başına farklı değer LZW kod akışını bozar (çözücü kod genişliğini
+        // ilk kod boyutuna göre kurar). Kareler ayrı ayrı paletlenebildiğinden
+        // (her kare için medianCut) minCodeSize EN BÜYÜK paletten türetilir ve
+        // tüm karelerde aynı kullanılır; her karenin LCT'si yine kendi paletiyle
+        // yazılır.
+        val palettes = frames.map { medianCut(it, maxColors) }
+        val minCodeSize = (highestBit(palettes.maxOf { it.size } - 1) + 1).coerceAtLeast(2)
+        val clearCode = 1 shl minCodeSize
+        val eoiCode = clearCode + 1
+
+        for ((i, frame) in frames.withIndex()) {
             // --- Graphic Control Extension: süre + disposal=1 (yerinde bırak) ---
             out.write(0x21); out.write(0xF9); out.write(0x04)
             out.write(0x04)                   // disposal=1, saydamlık yok
@@ -79,7 +88,7 @@ object GifEncoder {
             out.write(0)                      // blok sonu
 
             // --- Medyan-kesim paletleme ---
-            val palette = medianCut(frame, maxColors)
+            val palette = palettes[i]
             val indices = mapToPalette(frame, palette)
 
             // --- Image Descriptor: tam kare, yerel renk tablosu ---
@@ -99,8 +108,8 @@ object GifEncoder {
             }
 
             // --- Görüntü verisi: minimum kod boyutu + LZW alt blokları ---
-            out.write(MIN_CODE_SIZE)
-            out.write(lzwEncode(indices))
+            out.write(minCodeSize)
+            out.write(lzwEncode(indices, minCodeSize, clearCode, eoiCode))
         }
 
         out.write(0x3B)                       // trailer (GIF sonu, döngü buradan döner)
@@ -112,16 +121,21 @@ object GifEncoder {
     /**
      * Renk indekslerini GIF LZW kodlarına çevirir ve çıktıyı alt bloklara böler.
      *
+     * [minCodeSize] (LZW minimum kod boyutu), [clearCode] ve [eoiCode] dosya
+     * genelinde tek kez türetilir ve tüm karelerde aynı değerlerle çağrılır;
+     * çözücü ilk kod genişliğini bu değere göre kurduğundan kareler arasında
+     * tutarlı olmaları gerekir.
+     *
      * Kod genişliği "ertelenmiş değişim" kuralıyla büyür: bir sonraki boş kod
      * 2^codeSize'a ulaştığında genişlik artar. Bu, giflib/AnimatedGIF gibi
      * referans çözücülerle birebir aynı anda gerçekleşir; aksi halde GIF bozulur.
      * Sözlük 4096'ya (2^12) dolduğunda CLEAR kodlanıp sözlük sıfırlanır.
      */
-    private fun lzwEncode(indexed: IntArray): ByteArray {
+    private fun lzwEncode(indexed: IntArray, minCodeSize: Int, clearCode: Int, eoiCode: Int): ByteArray {
         val out = ByteArrayOutputStream()
         val dict = HashMap<Int, Int>(MAX_TABLE)
-        var codeSize = MIN_CODE_SIZE + 1      // 9
-        var nextCode = CLEAR_CODE + 2         // 258 (ilk veri kodu)
+        var codeSize = minCodeSize + 1        // başlangıç kod genişliği
+        var nextCode = clearCode + 2          // ilk veri kodu
         var bitBuf = 0
         var bitCount = 0
 
@@ -135,7 +149,7 @@ object GifEncoder {
             }
         }
 
-        emit(CLEAR_CODE)
+        emit(clearCode)
         var curr = indexed[0]
         for (i in 1 until indexed.size) {
             val prev = curr
@@ -150,16 +164,16 @@ object GifEncoder {
                     dict[key] = nextCode++
                     if (nextCode == (1 shl codeSize) && codeSize < 12) codeSize++
                 } else {
-                    emit(CLEAR_CODE)
+                    emit(clearCode)
                     dict.clear()
-                    nextCode = CLEAR_CODE + 2
-                    codeSize = MIN_CODE_SIZE + 1
+                    nextCode = clearCode + 2
+                    codeSize = minCodeSize + 1
                 }
                 curr = ch
             }
         }
         emit(curr)
-        emit(EOI_CODE)
+        emit(eoiCode)
         if (bitCount > 0) out.write(bitBuf and 0xFF)
 
         // Alt bloklara böl (maks 255 bayt/blok + blok sonu 0x00)
