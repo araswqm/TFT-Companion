@@ -500,18 +500,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun enterChargingMode() {
         viewModelScope.launch {
-            val api = ensureApi() ?: run {
+            val esp32 = ensureApi() ?: run {
                 showError("ESP32'ye bağlanılamadı — şarj modu tetiklenemedi")
                 return@launch
             }
             _ui.update { it.copy(working = true, progressLabel = "ESP32 kapatılıyor…") }
-            val ok = api.enterChargingMode(settingsState.value.baseUrl)
+            val ok = esp32.enterChargingMode(settingsState.value.baseUrl)
             _ui.update { it.copy(working = false, progressLabel = null) }
             if (ok) {
                 // ESP32 kendini kapattı; eski api/network artık geçersiz.
-                // Bu fonksiyonun local 'val api' değişkeni sınıf alanını gölgeler;
-                // sınıf alanını sıfırlamak için 'this.' şart.
-                this.api = null
+                // Local değişkene 'api' adını vermediğimiz için buradaki 'api'
+                // doğrudan sınıf alanına (var api) çözümlenir — shadow yok.
+                api = null
                 boundNetwork = null
                 _ui.update { it.copy(connState = ConnState.IDLE) }
                 showMessage("Şarj modu etkin. ESP32 kapalı — şarj bittiğinde switch'i kapatıp açın.")
