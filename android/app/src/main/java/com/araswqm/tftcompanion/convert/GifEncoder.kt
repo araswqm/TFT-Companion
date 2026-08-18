@@ -154,7 +154,7 @@ object GifEncoder {
         for (i in 1 until indexed.size) {
             val prev = curr
             val ch = indexed[i]
-            val key = (prev shl 8) or ch        // önek (kod) + karakter, çakışmasız
+            val key = (prev shl 12) or ch        // önek (kod) + karakter; kodlar 12 bite (4096) kadar çıkabildiğinden 8 bit kaydırma çakışma yaratıyordu
             val mapped = dict[key]
             if (mapped != null) {
                 curr = mapped
