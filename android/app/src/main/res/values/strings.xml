@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">TFT Companion</string>
-    <string name="media_listener_label">TFT Medya Dinleyici</string>
+    <string name="app_name">VinylTag</string>
+    <string name="media_listener_label">VinylTag Medya Dinleyici</string>
     <string name="watch_channel_name">Medya izleme</string>
     <string name="watch_notification_title">Şu an çalan medya izleniyor</string>
     <string name="watch_notification_text">Albüm kapağı ESP32 ekranına otomatik gönderiliyor</string>

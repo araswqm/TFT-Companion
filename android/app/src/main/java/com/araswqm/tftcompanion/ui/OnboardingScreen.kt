@@ -37,7 +37,7 @@ fun OnboardingScreen(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "TFT Companion",
+            text = "VinylTag",
             style = MaterialTheme.typography.headlineMedium,
             color = MaterialTheme.colorScheme.primary,
             textAlign = TextAlign.Center,
@@ -53,7 +53,7 @@ fun OnboardingScreen(
         Spacer(Modifier.height(16.dp))
         Text(
             text = "1. Ayarlar > Bildirimler açılacak\n"
-                + "2. \"TFT Medya Dinleyici\"yi etkinleştir\n"
+                + "2. \"VinylTag Medya Dinleyici\"yi etkinleştir\n"
                 + "3. Geri dön ve devam et",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,

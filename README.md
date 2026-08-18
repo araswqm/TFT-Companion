@@ -1,4 +1,4 @@
-# TFT Companion — ESP32-C6 Anahtarlık Eşlik Uygulaması
+# VinylTag — ESP32-C6 Anahtarlık Eşlik Uygulaması
 
 ESP32-C6 tabanlı, 128×128 ST7735 TFT ekranlı anahtarlığa albüm kapağı, resim, GIF ve video (MJPEG) gönderen bağımsız bir Android uygulaması (Kotlin + Jetpack Compose).
 
@@ -11,7 +11,7 @@ ESP32-C6 tabanlı, 128×128 ST7735 TFT ekranlı anahtarlığa albüm kapağı, r
 
 ## Android uygulamasını kurma
 
-APK'yı [Actions'tan](https://github.com/araswqm/TFT-Companion/actions) indirin (en son başarılı çalışmanın **app-debug.apk** artifact'i) veya `android/` klasöründen derleyin:
+APK'yı [Actions'tan](https://github.com/araswqm/VinylTag/actions) indirin (en son başarılı çalışmanın **app-debug.apk** artifact'i) veya `android/` klasöründen derleyin:
 
 ```
 cd android
@@ -22,7 +22,7 @@ APK çıktısı: `android/app/build/outputs/apk/debug/app-debug.apk`
 
 ### İlk kurulumda verilecek izinler
 
-1. **Bildirim erişimi (Notification Access)** — Otomatik mod için zorunlu. Açılış ekranından "Bildirim iznini etkinleştir" → Ayarlar > Bildirim erişimi > **TFT Medya Dinleyici**.
+1. **Bildirim erişimi (Notification Access)** — Otomatik mod için zorunlu. Açılış ekranından "Bildirim iznini etkinleştir" → Ayarlar > Bildirim erişimi > **VinylTag Medya Dinleyici**.
 2. **Bildirimler (Android 13+)**, **Yakındaki cihazlar (WiFi)** ve konum — otomatik WiFi bağlantısı ve ön plan hizmet bildirimi için.
 
 > Not: Yerel ağ erişimi için konum izni zorunludur (Android 11+). İzinlerle ilgili sorun yaşarsanız "İzlemeyi başlat / yeniden dene"ye basın.
