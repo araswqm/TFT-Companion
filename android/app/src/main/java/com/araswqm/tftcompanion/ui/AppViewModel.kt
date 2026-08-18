@@ -19,6 +19,7 @@ import com.araswqm.tftcompanion.media.MediaWatchService
 import com.araswqm.tftcompanion.media.NowPlaying
 import com.araswqm.tftcompanion.media.NowPlayingBus
 import com.araswqm.tftcompanion.net.Esp32Api
+import com.araswqm.tftcompanion.net.NfcServerApi
 import com.araswqm.tftcompanion.net.WifiConnector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -103,6 +104,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val preparer = MediaPreparer(application)
     private val wifiConnector = WifiConnector(application)
+    // NFC sunucusu ("şu an çalan şarkı" sayfası) istemcisi. İnternete gider,
+    // ESP32 ağına bind edilmez (ayrı sınıf, ayrı OkHttpClient).
+    private val nfcServerApi = NfcServerApi()
 
     private var api: Esp32Api? = null
     private var boundNetwork: Network? = null
@@ -183,7 +187,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     np
                 }
                 Log.d(TAG, "Yeni medya: '${effective.title}' (debounce $AUTO_DEBOUNCE_MS ms)")
-                _ui.update { it.copy(nowPlaying = effective) }
+                // Boş başlık = müzik durdu -> ekranda "şu an çalan yok" göster (null).
+                _ui.update {
+                    it.copy(nowPlaying = if (effective.title.isBlank()) null else effective)
+                }
+                // NFC sunucusu push: yalnızca AUTO modda, debounce'dan ÖNCE bağımsız
+                // launch ile (temizleme anında gitmeli; iptal edilemez). Boş başlık
+                // sunucudaki şarkıyı siler. ESP32 gönderimi için kapağa ihtiyaç yok —
+                // sadece başlık+sanatçı ile internetten POST edilir.
+                if (_ui.value.mode == MediaMode.AUTO) {
+                    pushToNfcServer(effective)
+                }
                 delay(AUTO_DEBOUNCE_MS)  // yeni medya gelirse önceki iptal olur
                 if (_ui.value.mode == MediaMode.AUTO) {
                     handleAutoNowPlaying(effective, spin = settingsState.value.spinEnabled)
@@ -221,6 +235,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             showError("Otomatik gönderim başarısız: ${e.message}")
         } finally {
             _ui.update { it.copy(working = false, progress = -1f, progressLabel = null) }
+        }
+    }
+
+    /**
+     * "Şu an çalan şarkı"yı NFC sunucusuna bildir. NFC ayarları boşsa (kullanıcı
+     * yapılandırmadıysa) hiçbir şey yapılmaz. Boş başlık -> sunucudaki mevcut şarkı
+     * temizlenir. Best-effort: başarısızlık yalnızca loglanır, kullanıcıya hata
+     * gösterilmez (NFC tag'i isteğe bağlı bir eklentidir).
+     */
+    private fun pushToNfcServer(np: NowPlaying) {
+        val settings = settingsState.value
+        if (settings.nfcServerUrl.isBlank()) return
+        viewModelScope.launch {
+            val ok = nfcServerApi.pushNowPlaying(
+                baseUrl = settings.nfcServerUrl,
+                token = settings.nfcServerToken,
+                title = np.title,
+                artist = np.artist,
+            )
+            Log.d(TAG, "NFC push ${if (ok) "OK" else "BAŞARISIZ"}: '${np.title}' — ${np.artist}")
         }
     }
 
@@ -413,8 +447,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val ctx = getApplication<Application>()
             if (mode == MediaMode.AUTO) {
                 startWatchService(ctx)
+                // NFC etkinse şu an çalan şarkıyı (varsa) sunucuya yeniden bildir —
+                // izleme yeni başladı, watcher hemen mevcut şarkıyı zaten basar ama
+                // beklemeden güvenli olsun. Boş başlık gönderilmez (temizleme değil).
+                val np = _ui.value.nowPlaying
+                if (np != null && np.title.isNotBlank()) pushToNfcServer(np)
             } else {
                 ctx.stopService(android.content.Intent(ctx, MediaWatchService::class.java))
+                // MANUAL mod: artık izlenmiyor -> sunucudaki "şu an çalan şarkı"yı temizle
+                pushToNfcServer(NowPlaying("", "", null, "manual"))
             }
         }
     }
@@ -439,6 +480,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             settingsRepository.setEsp32(ssid, password, ip, port)
             showMessage("ESP32 ayarları kaydedildi")
+        }
+    }
+
+    fun saveNfcSettings(url: String, token: String) {
+        viewModelScope.launch {
+            settingsRepository.setNfcServer(url, token)
+            showMessage("NFC sunucusu ayarları kaydedildi")
         }
     }
 

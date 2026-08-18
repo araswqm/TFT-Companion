@@ -54,6 +54,7 @@ fun MainScreen(
     onStartWatching: () -> Unit,
     onSpinToggle: (Boolean) -> Unit,
     onSaveEsp32: (String, String, String, Int) -> Unit,
+    onSaveNfc: (String, String) -> Unit,
     onOpenNls: () -> Unit,
     onConnect: () -> Unit,
     onEnterChargeMode: () -> Unit,
@@ -93,6 +94,8 @@ fun MainScreen(
         }
 
         Esp32SettingsCard(state, onSaveEsp32)
+
+        NfcSettingsCard(state, onSaveNfc)
 
         ChargeModeCard(
             enabled = state.connState == AppViewModel.ConnState.CONNECTED,
@@ -316,6 +319,49 @@ private fun Esp32SettingsCard(
             )
             Button(
                 onClick = { onSaveEsp32(ssid, password, ip, port.toIntOrNull() ?: 80) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Kaydet")
+            }
+        }
+    }
+}
+
+@Composable
+private fun NfcSettingsCard(
+    state: AppViewModel.UiState,
+    onSaveNfc: (String, String) -> Unit,
+) {
+    var url by remember(state.settings) { mutableStateOf(state.settings.nfcServerUrl) }
+    var token by remember(state.settings) { mutableStateOf(state.settings.nfcServerToken) }
+
+    Card {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("NFC Tag — Şu An Çalan Şarkı", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Otomatik modda çalan şarkı, buradaki adrese internetten bildirilir. "
+                    + "NFC tag'i okutan herkes şarkının YouTube Music sayfasını görür. "
+                    + "Sayfa adresi tag'e (ör. NFC Tools ile) yazılır; URL aynen şöyle olmalı: "
+                    + "https://<subdomain>/current",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = url,
+                onValueChange = { url = it },
+                label = { Text("Sunucu adresi (…/current)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Token (VINYLTAG_TOKEN)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = { onSaveNfc(url, token) },
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Kaydet")

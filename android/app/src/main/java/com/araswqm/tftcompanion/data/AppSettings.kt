@@ -9,6 +9,10 @@ data class AppSettings(
     val port: Int = 80,
     val darkTheme: Boolean = true,
     val spinEnabled: Boolean = true,          // Otomatik modda plak animasyonu mu, düz kapak mı gönderilsin
+    // NFC tag'e yazılan "şu an çalan şarkı" sayfası (Wispbyte'da çalışan vinyltag.py).
+    // Boş ise push devre dışı. Token VINYLTAG_TOKEN ile aynı olmalı.
+    val nfcServerUrl: String = "",
+    val nfcServerToken: String = "",
 ) {
     val baseUrl: String get() = "http://$ip:$port"
 }

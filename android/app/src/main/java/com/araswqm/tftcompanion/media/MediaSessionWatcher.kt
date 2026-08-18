@@ -233,11 +233,27 @@ class MediaSessionWatcher(context: Context) {
 
         override fun onPlaybackStateChanged(state: PlaybackState?) {
             Log.d(TAG, "onPlaybackStateChanged - ${controller.packageName} state=${state?.state}")
-            if (state?.state == PlaybackState.STATE_PLAYING) {
-                onChange(controller.metadata, state.state, true)
-            } else {
-                // Bu oturum durdu/durakladı; en iyi oturumu yeniden seç
-                refresh()
+            when (state?.state) {
+                PlaybackState.STATE_PLAYING -> {
+                    onChange(controller.metadata, state.state, true)
+                }
+                PlaybackState.STATE_PAUSED,
+                PlaybackState.STATE_STOPPED,
+                PlaybackState.STATE_NONE,
+                PlaybackState.STATE_ERROR -> {
+                    // Müzik durdu/durakladı/hata verdi -> NFC sunucusundaki "şu an
+                    // çalan şarkı"yı temizlemek için BOŞ şarkı sinyali gönder
+                    // (AppViewModel bunu "clear" olarak yorumlar). Geçici durumlar
+                    // (BUFFERING, CONNECTING, ileri/geri sarma) buraya girmez; onlar
+                    // yalnızca refresh edilir ki çalan başka bir oturum varsa yakalansın.
+                    Log.d(TAG, "Oturum ${controller.packageName} durdu (state=${state.state}), boş sinyal gönderiliyor")
+                    NowPlayingBus.emit(NowPlaying("", "", null, controller.packageName))
+                    refresh()
+                }
+                else -> {
+                    // BUFFERING/CONNECTING/sarma: geçici, en iyi oturumu yeniden seç
+                    refresh()
+                }
             }
         }
     }

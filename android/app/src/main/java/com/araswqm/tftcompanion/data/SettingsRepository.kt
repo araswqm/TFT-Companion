@@ -21,6 +21,8 @@ private object Keys {
     val PORT = stringPreferencesKey("esp32_port")
     val DARK_THEME = booleanPreferencesKey("dark_theme")
     val SPIN_ENABLED = booleanPreferencesKey("spin_enabled")
+    val NFC_SERVER_URL = stringPreferencesKey("nfc_server_url")
+    val NFC_SERVER_TOKEN = stringPreferencesKey("nfc_server_token")
 }
 
 class SettingsRepository(private val context: Context) {
@@ -34,6 +36,8 @@ class SettingsRepository(private val context: Context) {
             port = prefs[Keys.PORT]?.toIntOrNull() ?: AppSettings().port,
             darkTheme = prefs[Keys.DARK_THEME] ?: true,
             spinEnabled = prefs[Keys.SPIN_ENABLED] ?: true,
+            nfcServerUrl = prefs[Keys.NFC_SERVER_URL] ?: "",
+            nfcServerToken = prefs[Keys.NFC_SERVER_TOKEN] ?: "",
         )
     }
 
@@ -49,6 +53,11 @@ class SettingsRepository(private val context: Context) {
     suspend fun setDarkTheme(dark: Boolean) = update { it[Keys.DARK_THEME] = dark }
 
     suspend fun setSpinEnabled(enabled: Boolean) = update { it[Keys.SPIN_ENABLED] = enabled }
+
+    suspend fun setNfcServer(url: String, token: String) = update {
+        it[Keys.NFC_SERVER_URL] = url.trim()
+        it[Keys.NFC_SERVER_TOKEN] = token.trim()
+    }
 
     private fun Preferences.mode(): MediaMode =
         runCatching { MediaMode.valueOf(this[Keys.MODE] ?: MediaMode.AUTO.name) }

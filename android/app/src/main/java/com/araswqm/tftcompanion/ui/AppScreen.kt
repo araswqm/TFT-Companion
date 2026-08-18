@@ -47,6 +47,7 @@ fun AppScreen(viewModel: AppViewModel) {
                     onStartWatching = viewModel::startWatching,
                     onSpinToggle = viewModel::setSpinEnabled,
                     onSaveEsp32 = viewModel::saveEsp32Settings,
+                    onSaveNfc = viewModel::saveNfcSettings,
                     onOpenNls = viewModel::openNotificationSettings,
                     onConnect = viewModel::connect,
                     onEnterChargeMode = viewModel::enterChargingMode,
